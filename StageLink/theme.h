@@ -44,7 +44,7 @@ const ThemeSpec THEMES[] = {
   // 1 Sepia - warm tan/brown/cream, "Papers, Please"
   {"Sepia",     0x2B1D12, 0x4A3524, 0xEFDFB3, 0xA08865,
                 0x5C4630, 0x8A6C4C, 0xBA9B6E, 0xC8502E, 0xEFDFB3,
-                0x7A5F40, 0x6E8B3D, 0xC9A227, 10, true,  TF_SERIF},
+                0x7A5F40, 0x6E8B3D, 0xC9A227, 6,  false, TF_SERIF},
   // 2 Game Boy - 4-shade olive/green monochrome (alert stays true red: safety > purism)
   {"Game Boy",  0x0F380F, 0x285C28, 0x9BBC0F, 0x73942A,
                 0x306230, 0x8BAC0F, 0x9BBC0F, 0xB03A30, 0x9BBC0F,
@@ -52,11 +52,11 @@ const ThemeSpec THEMES[] = {
   // 3 Amber terminal - black + amber CRT, monospace
   {"Amber",     0x140A00, 0x2E1E04, 0xFFB000, 0x8F6210,
                 0x3C2800, 0x7A5200, 0xB87E10, 0xFF4530, 0xFFB000,
-                0x5C3D08, 0x4CB06C, 0xFFDD55, 8,  true,  TF_MONO},
+                0x5C3D08, 0x4CB06C, 0xFFDD55, 4,  false, TF_MONO},
   // 4 Ice - near-black + steel blue/cyan, clean sans
   {"Ice",       0x0A1220, 0x1C2A3E, 0xD8ECFF, 0x7E97B0,
                 0x26405C, 0x4A7196, 0x7FA8C9, 0xE04848, 0xD8ECFF,
-                0x3A5570, 0x3FBF8F, 0xD9B84A, 12, true,  TF_SANS},
+                0x3A5570, 0x3FBF8F, 0xD9B84A, 6,  false, TF_SANS},
   // 5 LCARS - TNG console: flat pills, orange/peach/lavender on black
   {"LCARS",     0x000000, 0x1A1A2E, 0xFFFFFF, 0x9090B8,
                 0xFF9C00, 0xFFCC99, 0xCC99CC, 0xD14C4C, 0xFFFFFF,
@@ -68,7 +68,7 @@ const ThemeSpec THEMES[] = {
   // 7 Stardew Valley - warm wood browns + cream, storybook serif
   {"Stardew",   0x3A2415, 0x5C3A21, 0xF7E7C6, 0xB08A5E,
                 0x6E4A2A, 0x9C6B3F, 0xC89A62, 0xC0392B, 0xF7E7C6,
-                0x8A5C33, 0x5FA548, 0xE8B93E, 10, true,  TF_SERIF},
+                0x8A5C33, 0x5FA548, 0xE8B93E, 6,  false, TF_SERIF},
 };
 
 #define THEME (THEMES[STAGELINK_THEME])
