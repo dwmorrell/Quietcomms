@@ -1,0 +1,106 @@
+/*
+  ma2bridge.ino — relays DJ messages to a GrandMA2 lighting console as
+  on-screen chat messages, so the lighting op sees what the DJ asked for
+  without anyone repeating it.
+
+  MA-Net itself is MA Lighting's proprietary protocol, so this uses the
+  console's standard third-party door instead: the telnet remote on TCP
+  port 30000. Per message the session is:
+
+      login STAGELINK          (console user created for us, no password)
+      chat "Urgent: Come to stage"
+      logout
+
+  MA2 pops chat lines on the console screens tagged with the sender's
+  login, so the op sees e.g.  STAGELINK: Urgent: Come to stage.
+
+  Only runs on the FOH unit (the hub), and only in Venue WiFi mode —
+  point FOH's venue wifi at the network the console lives on (SSID "MA2"
+  at this venue) and set MA2_CONSOLE_IP in StageLink.ino. In Direct Link
+  mode the console is unreachable, so messages are skipped silently.
+
+  Sends are driven by a millis-based state machine from loop(): the only
+  blocking step is the TCP connect, capped at 400ms, so a missing or
+  slow console can't stall the show UI for longer than that.
+*/
+
+#if !IS_DJ_UNIT && MA2_ENABLED
+
+WiFiClient ma2Client;
+
+#define MA2_QUEUE_MAX 4
+String ma2Queue[MA2_QUEUE_MAX];
+int ma2QueueCount = 0;
+
+enum Ma2State { MA2_IDLE, MA2_LOGGED_IN, MA2_CHAT_SENT, MA2_LOGGING_OUT };
+Ma2State ma2State = MA2_IDLE;
+unsigned long ma2StateAt = 0;
+
+// Pause between telnet commands, giving the console time to process the
+// previous line. Field-tunable if a console proves slower.
+#define MA2_STEP_MS 300
+
+// MA2's command line uses double quotes; strip anything that would break
+// out of ours (prompt labels never contain these, but stay safe).
+String ma2Sanitize(const String &s) {
+  String out;
+  out.reserve(s.length());
+  for (unsigned int i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c != '"' && c != '\\' && c >= 32) out += c;
+  }
+  return out;
+}
+
+void ma2QueueMessage(const String &category, const String &text) {
+  if (netMode != MODE_VENUE) return;   // console unreachable off its network
+  if (ma2QueueCount >= MA2_QUEUE_MAX) return;
+  ma2Queue[ma2QueueCount++] = ma2Sanitize(category + ": " + text);
+}
+
+void serviceMa2Bridge() {
+  switch (ma2State) {
+    case MA2_IDLE:
+      if (ma2QueueCount == 0) return;
+      // Blocking connect, capped short — the one unavoidable stall.
+      if (!ma2Client.connect(MA2_CONSOLE_IP, MA2_TELNET_PORT, 400)) {
+        // Console not reachable; drop the queue rather than retrying into
+        // a wall mid-show. The FOH<->DJ message itself already went through.
+        ma2QueueCount = 0;
+        return;
+      }
+      ma2Client.print("login \"" MA2_LOGIN_USER "\"\r\n");
+      ma2State = MA2_LOGGED_IN;
+      ma2StateAt = millis();
+      return;
+
+    case MA2_LOGGED_IN:
+      if (millis() - ma2StateAt < MA2_STEP_MS) return;
+      ma2Client.print("chat \"" + ma2Queue[0] + "\"\r\n");
+      ma2State = MA2_CHAT_SENT;
+      ma2StateAt = millis();
+      return;
+
+    case MA2_CHAT_SENT:
+      if (millis() - ma2StateAt < MA2_STEP_MS) return;
+      ma2Client.print("logout\r\n");
+      ma2State = MA2_LOGGING_OUT;
+      ma2StateAt = millis();
+      return;
+
+    case MA2_LOGGING_OUT:
+      if (millis() - ma2StateAt < 150) return;
+      ma2Client.stop();
+      // shift the queue down
+      for (int i = 1; i < ma2QueueCount; i++) ma2Queue[i - 1] = ma2Queue[i];
+      if (ma2QueueCount > 0) ma2QueueCount--;
+      ma2State = MA2_IDLE;
+      return;
+  }
+}
+
+#else
+// DJ unit (or bridge disabled): compile empty stubs.
+void ma2QueueMessage(const String &category, const String &text) {}
+void serviceMa2Bridge() {}
+#endif

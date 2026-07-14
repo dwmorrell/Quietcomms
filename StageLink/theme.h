@@ -1,0 +1,66 @@
+/*
+  theme.h — flash-time visual themes. Pick one with STAGELINK_THEME in
+  StageLink.ino. Styling only: palettes plus three style knobs; nothing
+  here changes behavior.
+
+  Colors are 24-bit hex (copy-pastable into CSS previews) and quantized
+  to the display's RGB565 in initPalette(), so a previewed color is the
+  shipped color.
+
+  Knobs:
+    buttonRadius — max button corner radius in px; 99 = full pill (h/2)
+    useBevel     — inset highlight rings on buttons (off = flat fills)
+    usePixelFont — Press Start 2P for category buttons / boot title /
+                   incoming text; off = built-in fonts (LCARS-style)
+*/
+#pragma once
+
+struct ThemeSpec {
+  const char* name;
+  uint32_t bg, panel, text, textDim;
+  uint32_t shadeA, shadeB, shadeC;   // category colorId 0/1/2 accents
+  uint32_t alert;                    // colorId 3 + alerts — always reads as red
+  uint32_t ok;                       // Sent/Seen feedback
+  uint32_t border;
+  uint32_t green, yellow;            // connection dot: linked / net-no-peer
+  uint8_t buttonRadius;              // 99 = full pill
+  bool useBevel;
+  bool usePixelFont;
+};
+
+const ThemeSpec THEMES[] = {
+  // 0 Midnight — the original grayscale-with-red look
+  {"Midnight",  0x000000, 0x282828, 0xFFFFFF, 0x969696,
+                0x464646, 0xA5A5A5, 0xD7D7D7, 0xC63838, 0xFFFFFF,
+                0x5A5A5A, 0x4CB06C, 0xD2B43C, 16, true,  true},
+  // 1 Sepia — warm tan/brown/cream, "Papers, Please"
+  {"Sepia",     0x2B1D12, 0x4A3524, 0xEFDFB3, 0xA08865,
+                0x5C4630, 0x8A6C4C, 0xBA9B6E, 0xC8502E, 0xEFDFB3,
+                0x7A5F40, 0x6E8B3D, 0xC9A227, 10, true,  true},
+  // 2 Game Boy — 4-shade olive/green monochrome (alert stays true red: safety > purism)
+  {"Game Boy",  0x0F380F, 0x285C28, 0x9BBC0F, 0x73942A,
+                0x306230, 0x8BAC0F, 0x9BBC0F, 0xB03A30, 0x9BBC0F,
+                0x4F7A42, 0x55A845, 0xC8B430, 8,  true,  true},
+  // 3 Amber terminal — black + amber CRT
+  {"Amber",     0x140A00, 0x2E1E04, 0xFFB000, 0x8F6210,
+                0x3C2800, 0x7A5200, 0xB87E10, 0xFF4530, 0xFFB000,
+                0x5C3D08, 0x4CB06C, 0xFFDD55, 8,  true,  true},
+  // 4 Ice — near-black + steel blue/cyan
+  {"Ice",       0x0A1220, 0x1C2A3E, 0xD8ECFF, 0x7E97B0,
+                0x26405C, 0x4A7196, 0x7FA8C9, 0xE04848, 0xD8ECFF,
+                0x3A5570, 0x3FBF8F, 0xD9B84A, 12, true,  true},
+  // 5 LCARS — TNG console: flat pills, orange/peach/lavender on black, no pixel font
+  {"LCARS",     0x000000, 0x1A1A2E, 0xFFFFFF, 0x9090B8,
+                0xFF9C00, 0xFFCC99, 0xCC99CC, 0xD14C4C, 0xFFFFFF,
+                0x000000, 0x66CC66, 0xFFCC00, 99, false, false},
+  // 6 Cyberpunk — near-black + neon yellow/cyan/magenta, hard corners
+  {"Cyberpunk", 0x0A0A12, 0x181820, 0xFCEE0A, 0x6A6A80,
+                0x262636, 0x00B8C8, 0xE93CAC, 0xFF2E5B, 0xFCEE0A,
+                0x3A3A50, 0x39FF88, 0xFCEE0A, 4,  false, true},
+  // 7 Stardew Valley — warm wood browns + cream + leafy green
+  {"Stardew",   0x3A2415, 0x5C3A21, 0xF7E7C6, 0xB08A5E,
+                0x6E4A2A, 0x9C6B3F, 0xC89A62, 0xC0392B, 0xF7E7C6,
+                0x8A5C33, 0x5FA548, 0xE8B93E, 10, true,  true},
+};
+
+#define THEME (THEMES[STAGELINK_THEME])

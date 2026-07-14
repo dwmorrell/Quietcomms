@@ -1,0 +1,10 @@
+# Arduino build output (arduino-cli --export-binaries / IDE)
+StageLink/build/
+build/
+
+# Pre-git full-folder backup — git history serves this role now
+archive/pre-uat-2026-07-14/
+
+# Scratch/session files
+serial_log.txt
+*.tmp

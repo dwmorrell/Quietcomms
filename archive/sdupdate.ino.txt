@@ -1,0 +1,71 @@
+/*
+  sdupdate.ino — boot-time firmware updates from the microSD slot, so a
+  board can be reflashed in the field with no PC attached.
+
+  How to use: format a microSD card FAT32, copy the role's firmware image
+  (stagelink-dj.bin or stagelink-foh.bin — see the firmware/ folder next
+  to this sketch, or export fresh ones with arduino-cli) to the card's
+  root, insert it, and power the board on. The board writes the image to
+  its spare OTA app slot and restarts into it.
+
+  The MD5 of the last-flashed image is kept in Preferences, so the file
+  can live on the card permanently: an already-applied image is skipped
+  at every boot (no reflash loop), and one card can move between boards.
+
+  Runs once from setup(), and must finish BEFORE touch.begin(): the SD
+  slot and the touch controller both use the VSPI peripheral (on
+  different pins), so this borrows VSPI first and releases it.
+*/
+
+void checkSdFirmwareUpdate() {
+  SPIClass sdSPI(VSPI);
+  sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  if (!SD.begin(SD_CS, sdSPI)) {
+    // No card (the common case) — get on with a normal boot.
+    sdSPI.end();
+    return;
+  }
+
+  const char* fwPath = IS_DJ_UNIT ? "/stagelink-dj.bin" : "/stagelink-foh.bin";
+  if (!SD.exists(fwPath)) { SD.end(); sdSPI.end(); return; }
+
+  File fw = SD.open(fwPath, FILE_READ);
+  if (!fw || fw.size() == 0) {
+    if (fw) fw.close();
+    SD.end(); sdSPI.end();
+    return;
+  }
+
+  // Skip images this board has already flashed — lets the file stay on
+  // the card without causing an update-restart loop every power-up.
+  MD5Builder md5;
+  md5.begin();
+  md5.addStream(fw, fw.size());
+  md5.calculate();
+  String hash = md5.toString();
+  fw.close();
+  if (hash == prefs.getString("fwmd5", "")) { SD.end(); sdSPI.end(); return; }
+
+  drawStatusLine("Updating from SD...");
+
+  fw = SD.open(fwPath, FILE_READ);
+  bool ok = false;
+  if (fw && Update.begin(fw.size())) {
+    size_t written = Update.writeStream(fw);
+    ok = (written == fw.size()) && Update.end() && Update.isFinished();
+  }
+  if (fw) fw.close();
+  SD.end();
+  sdSPI.end();
+
+  if (ok) {
+    prefs.putString("fwmd5", hash);
+    drawStatusLine("Update OK - restarting");
+    delay(800);
+    ESP.restart();
+  }
+
+  drawStatusLine("SD update failed");
+  delay(1200);
+  // fall through to a normal boot on the current firmware
+}
