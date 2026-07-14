@@ -178,40 +178,100 @@ void flashPress(Rect r) {
   delay(80);
 }
 
-// bold=true (category buttons: home screen categories, message items) always
-// uses the big bold pixel font, wrapping to 2 lines if needed — never drops
-// to a smaller font, so every button in the same list stays the same size.
-// bold=false (every other button — nav/utility actions) always uses the
-// thin font, since those labels are secondary UI, not the main tappable
-// content.
+// The theme's category-button font at a shrink step: step 0 is the
+// family's biggest, each step smaller, ending at built-in font 2.
+// Returns false once past the end of the ladder.
+bool setThemeButtonFont(int step) {
+  switch (THEME.fontFamily) {
+    case TF_PIXEL:
+      if (step == 0) { tft.setFreeFont(&PressStart2P14pt); return true; }
+      if (step == 1) { tft.setFreeFont(NULL); tft.setTextFont(2); return true; }
+      return false;
+    case TF_SERIF:
+      if (step == 0) { tft.setFreeFont(&FreeSerifBold12pt7b); return true; }
+      if (step == 1) { tft.setFreeFont(&FreeSerifBold9pt7b); return true; }
+      if (step == 2) { tft.setFreeFont(NULL); tft.setTextFont(2); return true; }
+      return false;
+    case TF_MONO:
+      if (step == 0) { tft.setFreeFont(&FreeMonoBold12pt7b); return true; }
+      if (step == 1) { tft.setFreeFont(&FreeMonoBold9pt7b); return true; }
+      if (step == 2) { tft.setFreeFont(NULL); tft.setTextFont(2); return true; }
+      return false;
+    default:   // TF_SANS
+      if (step == 0) { tft.setFreeFont(&FreeSansBold12pt7b); return true; }
+      if (step == 1) { tft.setFreeFont(&FreeSansBold9pt7b); return true; }
+      if (step == 2) { tft.setFreeFont(NULL); tft.setTextFont(2); return true; }
+      return false;
+  }
+}
+
+// The theme's large display font — boot title only.
+void setThemeTitleFont() {
+  switch (THEME.fontFamily) {
+    case TF_PIXEL: tft.setFreeFont(&PressStart2P16pt);   break;
+    case TF_SERIF: tft.setFreeFont(&FreeSerifBold18pt7b); break;
+    case TF_MONO:  tft.setFreeFont(&FreeMonoBold18pt7b);  break;
+    default:       tft.setFreeFont(&FreeSansBold18pt7b);  break;
+  }
+}
+
+// bold=true (category buttons: home screen categories, message items)
+// walks the theme's font ladder from biggest to smallest until the label
+// fits — one line if it can, wrapped to two if the button is tall
+// enough — so long labels shrink instead of overflowing. bold=false
+// (nav/utility actions) always uses the plain built-in font.
 void drawButton(Rect r, const String &label, uint16_t accent, bool bold) {
   shadedRoundRect(r, accent);
   tft.drawRoundRect(r.x, r.y, r.w, r.h, btnRadius(r), COL_BORDER);
   tft.setTextColor(contrastTextFor(accent), accent);
   tft.setTextDatum(MC_DATUM);
-  // Utility/nav buttons (Back, Come to stage, Prev/Next) use the same
-  // plain built-in font as the settings screen; category/message buttons
-  // use the retro pixel font — unless the theme is non-pixel (LCARS),
-  // where "bold" means the larger built-in font instead.
-  if (bold && THEME.usePixelFont) tft.setFreeFont(&PressStart2P14pt);
-  else { tft.setFreeFont(NULL); tft.setTextFont(bold ? 4 : 2); }
 
   int maxWidth = r.w - 12;
-  int maxHeight = r.h - 8;
   int cx = r.x + r.w / 2;
   int cy = r.y + r.h / 2 + 1;
 
-  if (tft.textWidth(label) <= maxWidth) {
-    tft.drawString(label, cx, cy);
-  } else {
+  if (!bold) {
+    tft.setFreeFont(NULL);
+    tft.setTextFont(2);
+    if (tft.textWidth(label) <= maxWidth) {
+      tft.drawString(label, cx, cy);
+    } else {
+      String lines[2];
+      int n = wrapButtonLabel(label, maxWidth, lines, 2);
+      int lh = tft.fontHeight();
+      int y = cy - (lh * n) / 2 + lh / 2;
+      for (int i = 0; i < n; i++) { tft.drawString(lines[i], cx, y); y += lh; }
+    }
+    return;
+  }
+
+  bool drawn = false;
+  for (int step = 0; !drawn && setThemeButtonFont(step); step++) {
+    int lh = tft.fontHeight();
+    if (lh > r.h - 2) continue;   // font taller than the button — shrink
+    if (tft.textWidth(label) <= maxWidth) {
+      tft.drawString(label, cx, cy);
+      drawn = true;
+    } else if (2 * lh <= r.h - 4) {
+      String lines[2];
+      int n = wrapButtonLabel(label, maxWidth, lines, 2);
+      // only accept the wrap if nothing got truncated past 2 lines
+      if (n == 1 || tft.textWidth(lines[n - 1]) <= maxWidth) {
+        int y = cy - (lh * n) / 2 + lh / 2;
+        for (int i = 0; i < n; i++) { tft.drawString(lines[i], cx, y); y += lh; }
+        drawn = true;
+      }
+    }
+  }
+  if (!drawn) {
+    // ladder exhausted (extreme label) — best effort at the smallest font
+    tft.setFreeFont(NULL);
+    tft.setTextFont(2);
     String lines[2];
     int n = wrapButtonLabel(label, maxWidth, lines, 2);
-    int lineHeight = tft.fontHeight();
-    int y = cy - (lineHeight * n) / 2 + lineHeight / 2;
-    for (int i = 0; i < n; i++) {
-      tft.drawString(lines[i], cx, y);
-      y += lineHeight;
-    }
+    int lh = tft.fontHeight();
+    int y = cy - (lh * n) / 2 + lh / 2;
+    for (int i = 0; i < n; i++) { tft.drawString(lines[i], cx, y); y += lh; }
   }
 
   tft.setFreeFont(NULL);
@@ -320,8 +380,7 @@ void drawBootScreen() {
 
   tft.setTextColor(COL_TEXT, COL_BG);
   tft.setTextDatum(MC_DATUM);
-  if (THEME.usePixelFont) tft.setFreeFont(&PressStart2P16pt);
-  else { tft.setFreeFont(NULL); tft.setTextFont(4); }
+  setThemeTitleFont();
   tft.drawString("StageLink", SCREEN_W / 2, 150);
   tft.setFreeFont(NULL);
   tft.setTextFont(2);
@@ -544,23 +603,19 @@ void drawCategory() {
   String title = (&cat != &parent) ? String(parent.name) + " > " + cat.name : String(cat.name);
   tft.drawString(title, 12, 30);
 
-  // Long lists get short rows; the pixel font wraps to 2 lines at 28px
-  // which overflows rows under 34px, so tight lists drop to the plain
-  // font instead of overflowing (keeps user-authored labels verbatim).
-  int gap = 8;
-  int cellH = (areaH - gap * (cat.itemCount - 1)) / max(1, (int)cat.itemCount);
-  bool itemsBold = cellH >= 34;
-
   for (int i = 0; i < cat.itemCount; i++) {
     Rect r = gridRect(i, cat.itemCount, 10, areaY, SCREEN_W - 20, areaH, 1);
     uint16_t accent = altShade(colorForId(cat.colorId), i);
     if (cat.items[i].kind == KIND_THUMBS) {
-      // thumbs-up renders as a drawn glyph, never as font text
+      // thumbs-up renders as a drawn glyph, never as font text; sized to
+      // leave a few px of margin inside whatever row height the list has
       shadedRoundRect(r, accent);
       tft.drawRoundRect(r.x, r.y, r.w, r.h, btnRadius(r), COL_BORDER);
-      drawThumbsGlyph(r.x + r.w / 2, r.y + r.h / 2, 3, contrastTextFor(accent));
+      drawThumbsGlyph(r.x + r.w / 2, r.y + r.h / 2, (r.h - 6) / 16.0f,
+                      contrastTextFor(accent), accent);
     } else {
-      drawButton(r, cat.items[i].label, accent, itemsBold);
+      // drawButton's font ladder shrinks labels to fit even short rows
+      drawButton(r, cat.items[i].label, accent, true);
     }
   }
 
@@ -778,9 +833,8 @@ void drawIncoming() {
   tft.drawString(incomingCategory, SCREEN_W / 2, 76);
 
   tft.setTextColor(COL_TEXT, COL_BG);
-  if (THEME.usePixelFont) tft.setFreeFont(&PressStart2P16pt);
-  else { tft.setFreeFont(NULL); tft.setTextFont(4); }
-  drawWrappedCentered(incomingText, SCREEN_W / 2, 110, SCREEN_W - 40, 34);
+  setThemeButtonFont(0);   // theme's biggest button font for the message body
+  drawWrappedCentered(incomingText, SCREEN_W / 2, 110, SCREEN_W - 40, tft.fontHeight() + 6);
   tft.setFreeFont(NULL);
   tft.setTextFont(2);
 
@@ -854,19 +908,24 @@ void dismissIncoming() {
 // by question answers ("More"/"Less"/"Just Right") and the thumbs-up.
 #define TRANSIENT_SHOW_MS 1500
 
-// Pixel-art thumbs-up built from fillRect cells on a small grid; px is the
-// cell size, so the same shape works at button scale (3) and banner scale (8).
-void drawThumbsGlyph(int cx, int cy, int px, uint16_t color) {
-  // grid is 8 wide x 9 tall, origin at top-left cell
-  int ox = cx - 4 * px;
-  int oy = cy - 4 * px + px / 2;
-  // thumb tip and shaft
-  tft.fillRect(ox + 2 * px, oy,          px,     2 * px, color);   // tip
-  tft.fillRect(ox + 1 * px, oy + 2 * px, 2 * px, 2 * px, color);   // knuckle bend
-  // fist / fingers block
-  tft.fillRect(ox + 1 * px, oy + 4 * px, 5 * px, 4 * px, color);
-  // cuff at the wrist
-  tft.fillRect(ox + 6 * px + px / 2, oy + 4 * px, px, 4 * px, color);
+// Smooth-primitive thumbs-up (same construction as the boot reel): a solid
+// rounded fist with three finger-crease lines knocked out in the surface
+// color, and a thumb column merged into its top-left. u is the unit size
+// (glyph spans ~16u square); bg is the surface behind the glyph, needed
+// for the anti-aliased edges. Geometry prototyped in thumb_preview.ps1.
+void drawThumbsGlyph(int cx, int cy, float u, uint16_t color, uint16_t bg) {
+  int ox = cx - (int)(8.0f * u);
+  int oy = cy - (int)(8.0f * u);
+  tft.fillSmoothRoundRect(ox + (int)(2.6f * u), oy + (int)(6.4f * u),
+                          (int)(12.0f * u), (int)(9.2f * u), (int)(2.4f * u), color, bg);
+  for (int i = 1; i <= 3; i++) {
+    int y = oy + (int)((6.4f + i * 2.3f) * u);
+    tft.fillSmoothRoundRect(ox + (int)(7.0f * u), y,
+                            (int)(8.2f * u), max(1, (int)(0.55f * u)),
+                            max(1, (int)(0.27f * u)), bg, color);
+  }
+  tft.fillSmoothRoundRect(ox + (int)(2.0f * u), oy + (int)(1.0f * u),
+                          (int)(4.2f * u), (int)(8.0f * u), (int)(2.1f * u), color, bg);
 }
 
 void showTransient(const String &text) {
@@ -883,12 +942,11 @@ void showTransient(const String &text) {
   tft.drawRoundRect(panel.x, panel.y, panel.w, panel.h, btnRadius(panel), COL_BORDER);
 
   if (text == THUMBS_WIRE_TEXT) {
-    drawThumbsGlyph(SCREEN_W / 2, 160, 8, COL_GREEN);
+    drawThumbsGlyph(SCREEN_W / 2, 160, 5.5f, COL_GREEN, COL_PANEL);
   } else {
     tft.setTextColor(COL_TEXT, COL_PANEL);
     tft.setTextDatum(MC_DATUM);
-    if (THEME.usePixelFont) tft.setFreeFont(&PressStart2P16pt);
-    else { tft.setFreeFont(NULL); tft.setTextFont(4); }
+    setThemeButtonFont(0);
     tft.drawString(text, SCREEN_W / 2, 160);
     tft.setFreeFont(NULL);
     tft.setTextFont(2);
