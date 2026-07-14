@@ -175,19 +175,19 @@ unsigned long lastTouchAccept = 0;
 
 // Intentional-press gate: a touch must stay put this long before it counts
 // as a tap, so a graze can't fire a button. Release early = no tap.
+// Message-send buttons don't tap at all — they require a left-to-right
+// SWIPE across the button (trySwipeGesture in display_ui.ino), which is
+// impossible to trigger accidentally.
 #define TAP_HOLD_MS 200
 #define TAP_SLOP_PX 18
+#define SWIPE_DIST  90    // horizontal travel to complete a swipe-send
+#define SWIPE_BAND  26    // max vertical wander during a swipe
 bool tapPending = false;
 bool tapFired = false;
+bool touchDownValid = false;
+bool swipeConsumed = false;
 unsigned long tapStart = 0;
 int tapX = 0, tapY = 0;
-
-// Alert-colored (colorId 3) category items require a deliberate hold
-// before sending, so a stray/accidental tap can't fire an urgent message.
-int pendingUrgentIndex = -1;
-unsigned long pendingUrgentStart = 0;
-Rect pendingUrgentRect;
-#define URGENT_HOLD_MS 600
 
 // Ack-check feedback: the last sent prompt waits here until the peer's
 // "seen" ack arrives, then an animated green check pops on the button
@@ -260,7 +260,6 @@ void loop() {
   serviceAlertPulse();
   serviceIncomingAutoDismiss();
   serviceTransient();
-  serviceUrgentHold();
   serviceStatusBar();
   serviceAckCheck();
   serviceDashboard();

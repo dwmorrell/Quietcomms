@@ -221,13 +221,22 @@ void setThemeTitleFont() {
 // enough — so long labels shrink instead of overflowing. bold=false
 // (nav/utility actions) always uses the plain built-in font.
 void drawButton(Rect r, const String &label, uint16_t accent, bool bold) {
-  shadedRoundRect(r, accent);
-  tft.drawRoundRect(r.x, r.y, r.w, r.h, btnRadius(r), COL_BORDER);
+  bool lcars = THEME.lcarsChrome;
+  if (lcars) {
+    // LCARS bar: rounded cap on the left, flat right end, label pushed
+    // to the right edge in dark text — straight off the show's consoles.
+    int capR = r.h / 2;
+    tft.fillSmoothCircle(r.x + capR, r.y + capR, capR, accent, COL_BG);
+    tft.fillRect(r.x + capR, r.y, r.w - capR, r.h, accent);
+  } else {
+    shadedRoundRect(r, accent);
+    tft.drawRoundRect(r.x, r.y, r.w, r.h, btnRadius(r), COL_BORDER);
+  }
   tft.setTextColor(contrastTextFor(accent), accent);
-  tft.setTextDatum(MC_DATUM);
+  tft.setTextDatum(lcars ? MR_DATUM : MC_DATUM);
 
-  int maxWidth = r.w - 12;
-  int cx = r.x + r.w / 2;
+  int maxWidth = r.w - (lcars ? r.h / 2 + 16 : 12);
+  int cx = lcars ? (r.x + r.w - 10) : (r.x + r.w / 2);
   int cy = r.y + r.h / 2 + 1;
 
   if (!bold) {
@@ -509,19 +518,66 @@ void drawStatusBar() {
   tft.fillRect(SCREEN_W - 19, 7, 6, 10, COL_TEXT_DIM);  // vertical bar
 }
 
+// ---------------- layout chrome ----------------
+// LCARS chrome shifts all list content right to make room for the
+// signature sidebar rail; every grid call site uses these so draw,
+// tap, and swipe geometry always agree.
+int contentX() { return THEME.lcarsChrome ? 40 : 10; }
+int contentW() { return SCREEN_W - contentX() - 10; }
+
+// LCARS sidebar: stacked color blocks with rounded ends down the left
+// edge, in the theme's three accent shades.
+void drawLcarsRail(int yTop, int yBottom) {
+  int x = 6, w = 28;
+  int h = yBottom - yTop;
+  int b1 = (int)(h * 0.42f), b2 = (int)(h * 0.30f);
+  int b3 = h - b1 - b2 - 8;
+  tft.fillSmoothRoundRect(x, yTop, w, b1, 10, COL_TEAL, COL_BG);
+  tft.fillSmoothRoundRect(x, yTop + b1 + 4, w, b2, 10, COL_AMBER, COL_BG);
+  if (b3 > 12) tft.fillSmoothRoundRect(x, yTop + b1 + b2 + 8, w, b3, 10, COL_CORAL, COL_BG);
+}
+
+// ---------------- swipe-to-send ----------------
+// Message-send buttons don't fire on a press: the finger must land on
+// the button and travel left-to-right across it. Chevrons at the
+// button's left edge advertise the gesture.
+void drawSwipeHint(Rect r, uint16_t color) {
+  int cy = r.y + r.h / 2;
+  for (int k = 0; k < 2; k++) {
+    int x = r.x + 8 + k * 7;
+    tft.fillTriangle(x, cy - 5, x, cy + 5, x + 5, cy, color);
+  }
+}
+
+// Brief "this one swipes" nudge when a send button is tapped instead.
+void showSwipeNudge(Rect r) {
+  drawButton(r, "Swipe >> to send", COL_PANEL, false);
+  delay(400);
+  if (currentScreen == SCR_CATEGORY) drawCategory();
+  else if (currentScreen == SCR_INCOMING) drawIncoming();
+}
+
+bool swipeHit(Rect r, int dx, int dy, int cx2, int cy2) {
+  if (!pointInRect(dx, dy, r)) return false;      // must start on the button
+  if (abs(cy2 - dy) > SWIPE_BAND) return false;   // stay in the button's lane
+  int need = min(SWIPE_DIST, r.w - 30);           // narrow buttons need less travel
+  return (cx2 - dx) >= need;
+}
+
 // ---------------- home screen ----------------
 void drawHome() {
   tft.fillScreen(COL_BG);
   drawStatusBar();
+  if (THEME.lcarsChrome) drawLcarsRail(32, SCREEN_H - 10);
   for (int i = 0; i < CATEGORY_COUNT; i++) {
-    Rect r = gridRect(i, CATEGORY_COUNT, 10, 32, SCREEN_W - 20, SCREEN_H - 42, 1);
+    Rect r = gridRect(i, CATEGORY_COUNT, contentX(), 32, contentW(), SCREEN_H - 42, 1);
     drawButton(r, CATEGORIES[i].name, altShade(colorForId(CATEGORIES[i].colorId), i));
   }
 }
 
 void tapHome(int x, int y) {
   for (int i = 0; i < CATEGORY_COUNT; i++) {
-    Rect r = gridRect(i, CATEGORY_COUNT, 10, 32, SCREEN_W - 20, SCREEN_H - 42, 1);
+    Rect r = gridRect(i, CATEGORY_COUNT, contentX(), 32, contentW(), SCREEN_H - 42, 1);
     if (pointInRect(x, y, r)) {
       flashPress(r);
       activeCategory = i;
@@ -579,15 +635,17 @@ void drawCategory() {
   int areaY = 48, areaH = SCREEN_H - 48 - 42;
   Rect back, stage;
 
+  if (THEME.lcarsChrome) drawLcarsRail(areaY, SCREEN_H - 42);
+
   if (onSubmenu()) {
     // submenu: the parent's child categories as big buttons
     tft.setTextColor(COL_TEXT_DIM, COL_BG);
     tft.setTextDatum(TL_DATUM);
     tft.setTextFont(2);
-    tft.drawString(parent.name, 12, 30);
+    tft.drawString(parent.name, contentX() + 2, 30);
 
     for (int i = 0; i < parent.subcatCount; i++) {
-      Rect r = gridRect(i, parent.subcatCount, 10, areaY, SCREEN_W - 20, areaH, 1);
+      Rect r = gridRect(i, parent.subcatCount, contentX(), areaY, contentW(), areaH, 1);
       drawButton(r, parent.subcats[i].name, altShade(colorForId(parent.subcats[i].colorId), i));
     }
     categoryBottomRow(back, stage, true);
@@ -601,10 +659,10 @@ void drawCategory() {
   // breadcrumb on child screens ("Sound > Monitors") so the DJ always
   // knows where Back leads
   String title = (&cat != &parent) ? String(parent.name) + " > " + cat.name : String(cat.name);
-  tft.drawString(title, 12, 30);
+  tft.drawString(title, contentX() + 2, 30);
 
   for (int i = 0; i < cat.itemCount; i++) {
-    Rect r = gridRect(i, cat.itemCount, 10, areaY, SCREEN_W - 20, areaH, 1);
+    Rect r = gridRect(i, cat.itemCount, contentX(), areaY, contentW(), areaH, 1);
     uint16_t accent = altShade(colorForId(cat.colorId), i);
     if (cat.items[i].kind == KIND_THUMBS) {
       // thumbs-up renders as a drawn glyph, never as font text; sized to
@@ -617,9 +675,13 @@ void drawCategory() {
       // drawButton's font ladder shrinks labels to fit even short rows
       drawButton(r, cat.items[i].label, accent, true);
     }
+    drawSwipeHint(r, contrastTextFor(accent));   // items are swipe-to-send
   }
 
   categoryBottomRow(back, stage, true);
+#if IS_DJ_UNIT
+  drawSwipeHint(stage, contrastTextFor(COL_ALERT));
+#endif
 
   // A full redraw paints over an in-flight ack check — put it back if the
   // acknowledged button lives on this screen and the 10s window is open.
@@ -637,16 +699,7 @@ void tapCategory(int x, int y) {
   categoryBottomRow(back, stage, false);
 
 #if IS_DJ_UNIT
-  if (pointInRect(x, y, stage)) {
-    flashPress(stage);
-    sendPromptMessage("Urgent", "Come to stage");
-    pendingAckText = "Come to stage";
-    pendingAckCategory = activeCategory;
-    pendingAckSubcategory = activeSubcategory;
-    pendingAckRect = stage;
-    flashSent(stage, COL_ALERT);
-    return;
-  }
+  if (pointInRect(x, y, stage)) { showSwipeNudge(stage); return; }   // send = swipe only
 #endif
   if (pointInRect(x, y, back)) {
     flashPress(back);
@@ -663,7 +716,7 @@ void tapCategory(int x, int y) {
 
   if (onSubmenu()) {
     for (int i = 0; i < parent.subcatCount; i++) {
-      Rect r = gridRect(i, parent.subcatCount, 10, areaY, SCREEN_W - 20, areaH, 1);
+      Rect r = gridRect(i, parent.subcatCount, contentX(), areaY, contentW(), areaH, 1);
       if (pointInRect(x, y, r)) {
         flashPress(r);
         activeSubcategory = i;
@@ -674,32 +727,90 @@ void tapCategory(int x, int y) {
     return;
   }
 
+  // leaf items are swipe-to-send — a tap just teaches the gesture
   const PromptCategory &cat = *currentCatDef();
   for (int i = 0; i < cat.itemCount; i++) {
-    Rect r = gridRect(i, cat.itemCount, 10, areaY, SCREEN_W - 20, areaH, 1);
-    if (pointInRect(x, y, r)) {
-      const PromptItem &item = cat.items[i];
-      if (item.kind == KIND_QUESTION) {
-        // question: peer answers via its own popup; the answer arrives as
-        // a transient, so there's no Seen ack to wait for
-        sendQuestion(item.label);
-        flashSent(r, colorForId(cat.colorId));
-      } else if (item.kind == KIND_THUMBS) {
-        sendTransient(THUMBS_WIRE_TEXT);
-        flashSent(r, colorForId(cat.colorId));
-      } else if (cat.colorId == 3) {
-        startPendingUrgent(i, r);
-      } else {
-        sendPromptMessage(cat.name, item.label);
-        pendingAckText = item.label;
-        pendingAckCategory = activeCategory;
-        pendingAckSubcategory = activeSubcategory;
-        pendingAckRect = r;
-        flashSent(r, colorForId(cat.colorId));
+    Rect r = gridRect(i, cat.itemCount, contentX(), areaY, contentW(), areaH, 1);
+    if (pointInRect(x, y, r)) { showSwipeNudge(r); return; }
+  }
+}
+
+// Fires a leaf item's send action — called by a completed swipe.
+void activateCategoryItem(int i, Rect r) {
+  const PromptCategory &cat = *currentCatDef();
+  if (i < 0 || i >= cat.itemCount) return;
+  const PromptItem &item = cat.items[i];
+  if (item.kind == KIND_QUESTION) {
+    // the answer arrives as a transient, so there's no Seen ack to wait for
+    sendQuestion(item.label);
+    flashSent(r, colorForId(cat.colorId));
+  } else if (item.kind == KIND_THUMBS) {
+    sendTransient(THUMBS_WIRE_TEXT);
+    flashSent(r, colorForId(cat.colorId));
+  } else {
+    // urgent items included: the swipe itself is the deliberate
+    // confirmation that hold-to-confirm used to provide
+    sendPromptMessage(cat.name, item.label);
+    pendingAckText = item.label;
+    pendingAckCategory = activeCategory;
+    pendingAckSubcategory = activeSubcategory;
+    pendingAckRect = r;
+    flashSent(r, colorForId(cat.colorId));
+  }
+}
+
+// The swipe router: given a touch that started at (dx,dy) and is now at
+// (cx2,cy2), fire the send button being swiped, if any. Called from
+// handleTouch on every touch movement; returns true when a send fired.
+bool trySwipeGesture(int dx, int dy, int cx2, int cy2) {
+  if (currentScreen == SCR_CATEGORY) {
+    if (activeCategory < 0 || activeCategory >= CATEGORY_COUNT) return false;
+    if (onSubmenu()) return false;   // submenu rows are navigation, not sends
+    const PromptCategory &cat = *currentCatDef();
+    int areaY = 48, areaH = SCREEN_H - 48 - 42;
+    for (int i = 0; i < cat.itemCount; i++) {
+      Rect r = gridRect(i, cat.itemCount, contentX(), areaY, contentW(), areaH, 1);
+      if (swipeHit(r, dx, dy, cx2, cy2)) { activateCategoryItem(i, r); return true; }
+    }
+#if IS_DJ_UNIT
+    Rect back, stage;
+    categoryBottomRow(back, stage, false);
+    if (swipeHit(stage, dx, dy, cx2, cy2)) {
+      sendPromptMessage("Urgent", "Come to stage");
+      pendingAckText = "Come to stage";
+      pendingAckCategory = activeCategory;
+      pendingAckSubcategory = activeSubcategory;
+      pendingAckRect = stage;
+      flashSent(stage, COL_ALERT);
+      return true;
+    }
+#endif
+    return false;
+  }
+
+  if (currentScreen == SCR_INCOMING) {
+    if (incomingIsQuestion) {
+      for (int i = 0; i < 3; i++) {
+        Rect r = questionAnswerRect(i);
+        if (swipeHit(r, dx, dy, cx2, cy2)) {
+          sendTransient(QUESTION_ANSWERS[i]);
+          incomingIsQuestion = false;
+          incomingAcked = true;
+          dismissIncoming();
+          return true;
+        }
       }
-      return;
+      return false;
+    }
+    Rect seenBtn = {30, 240, SCREEN_W - 60, 56};
+    if (swipeHit(seenBtn, dx, dy, cx2, cy2)) {
+      sendAck(incomingText);
+      incomingAcked = true;
+      dismissIncoming();
+      return true;
     }
   }
+  return false;
 }
 
 void flashSent(Rect r, uint16_t accent) {
@@ -743,53 +854,6 @@ void serviceAckCheck() {
   if (frame != ackCheckLastFrame) {
     ackCheckLastFrame = frame;
     drawAckCheck(frame);
-  }
-}
-
-// ---------------- urgent hold-to-confirm ----------------
-void startPendingUrgent(int i, Rect r) {
-  pendingUrgentIndex = i;
-  pendingUrgentStart = millis();
-  pendingUrgentRect = r;
-  drawButton(r, "Hold to confirm...", COL_ALERT);
-}
-
-void cancelPendingUrgent() {
-  if (pendingUrgentIndex == -1) return;
-  pendingUrgentIndex = -1;
-  if (currentScreen == SCR_CATEGORY) drawCategory();
-}
-
-void confirmPendingUrgent() {
-  int i = pendingUrgentIndex;
-  pendingUrgentIndex = -1;
-  if (currentScreen != SCR_CATEGORY) return;
-  const PromptCategory* catPtr = currentCatDef();
-  if (!catPtr || onSubmenu()) return;
-  const PromptCategory &cat = *catPtr;
-  if (i < 0 || i >= cat.itemCount) return;
-  sendPromptMessage(cat.name, cat.items[i].label);
-  pendingAckText = cat.items[i].label;
-  pendingAckCategory = activeCategory;
-  pendingAckSubcategory = activeSubcategory;
-  pendingAckRect = pendingUrgentRect;
-  flashSent(pendingUrgentRect, colorForId(cat.colorId));
-}
-
-void serviceUrgentHold() {
-  if (pendingUrgentIndex == -1) return;
-
-  if (currentScreen != SCR_CATEGORY) { pendingUrgentIndex = -1; return; }
-
-  if (!touch.touched()) { cancelPendingUrgent(); return; }
-
-  TS_Point p = touch.getPoint();
-  int sx, sy;
-  mapTouch(p.x, p.y, sx, sy);
-  if (!pointInRect(sx, sy, pendingUrgentRect)) { cancelPendingUrgent(); return; }
-
-  if (millis() - pendingUrgentStart >= URGENT_HOLD_MS) {
-    confirmPendingUrgent();
   }
 }
 
@@ -840,15 +904,16 @@ void drawIncoming() {
 
   if (incomingIsQuestion) {
     // A question is answered, not "seen": three stacked canned answers
-    // replace the Seen button, and picking one both replies and closes.
+    // replace the Seen button; swiping one both replies and closes.
     for (int i = 0; i < 3; i++) {
-      drawButton(questionAnswerRect(i), QUESTION_ANSWERS[i], altShade(COL_PANEL, i), false);
+      Rect r = questionAnswerRect(i);
+      drawButton(r, QUESTION_ANSWERS[i], altShade(COL_PANEL, i), false);
+      drawSwipeHint(r, COL_TEXT);
     }
     return;
   }
 
-  // Single-state green Seen button in the plain built-in font — one tap
-  // acknowledges AND closes, no second "tap to close" step.
+  // Single-state green Seen button — swiping it acknowledges AND closes.
   Rect seenBtn = {30, 240, SCREEN_W - 60, 56};
   shadedRoundRect(seenBtn, COL_GREEN);
   tft.drawRoundRect(seenBtn.x, seenBtn.y, seenBtn.w, seenBtn.h, btnRadius(seenBtn), COL_BORDER);
@@ -856,32 +921,20 @@ void drawIncoming() {
   tft.setTextDatum(MC_DATUM);
   tft.setTextFont(2);
   tft.drawString("Seen", seenBtn.x + seenBtn.w / 2, seenBtn.y + seenBtn.h / 2);
+  drawSwipeHint(seenBtn, contrastTextFor(COL_GREEN));
 }
 
 void tapIncoming(int x, int y) {
+  // acks and answers are sends — swipe only; a tap teaches the gesture
   if (incomingIsQuestion) {
     for (int i = 0; i < 3; i++) {
       Rect r = questionAnswerRect(i);
-      if (pointInRect(x, y, r)) {
-        flashPress(r);
-        sendTransient(QUESTION_ANSWERS[i]);   // the answer IS the acknowledgment
-        incomingIsQuestion = false;
-        incomingAcked = true;
-        dismissIncoming();
-        return;
-      }
+      if (pointInRect(x, y, r)) { showSwipeNudge(r); return; }
     }
-    return;   // taps elsewhere do nothing — answering is the way out
+    return;
   }
-
   Rect seenBtn = {30, 240, SCREEN_W - 60, 56};
-  if (pointInRect(x, y, seenBtn)) {
-    flashPress(seenBtn);
-    sendAck(incomingText);
-    incomingAcked = true;
-    dismissIncoming();
-  }
-  // taps elsewhere do nothing — Seen is the one explicit way out
+  if (pointInRect(x, y, seenBtn)) { showSwipeNudge(seenBtn); return; }
 }
 
 // Redraws whichever regular screen `s` names (overlays are not restorable
@@ -1136,30 +1189,48 @@ void handleTouch() {
     mapTouch(p.x, p.y, sx, sy);
 
     if (!wasTouched) {
-      // touch-down edge: arm a pending tap (existing inter-tap debounce kept)
-      if (now - lastTouchAccept > 180) {
+      // touch-down edge: record the down point and arm a pending tap
+      // (existing inter-tap debounce kept)
+      touchDownValid = (now - lastTouchAccept > 180);
+      swipeConsumed = false;
+      tapX = sx;
+      tapY = sy;
+      if (touchDownValid) {
         tapPending = true;
         tapFired = false;
         tapStart = now;
-        tapX = sx;
-        tapY = sy;
       }
-    } else if (tapPending && !tapFired) {
-      if (abs(sx - tapX) > TAP_SLOP_PX || abs(sy - tapY) > TAP_SLOP_PX) {
-        tapPending = false;   // wandered — not an intentional press
-      } else if (now - tapStart >= TAP_HOLD_MS) {
-        tapFired = true;
+    } else {
+      // swipe-send check runs continuously while the finger is down —
+      // completing the travel threshold fires the send immediately
+      if (touchDownValid && !swipeConsumed && !tapFired &&
+          trySwipeGesture(tapX, tapY, sx, sy)) {
+        swipeConsumed = true;
         tapPending = false;
+        tapFired = true;        // suppress any tap from this same touch
         lastTouchAccept = now;
 #if TOUCH_DEBUG
-        Serial.printf("tap held=(%d,%d) screen=%d\n", tapX, tapY, currentScreen);
+        Serial.printf("swipe from=(%d,%d) to=(%d,%d) screen=%d\n", tapX, tapY, sx, sy, currentScreen);
 #endif
-        onScreenTap(tapX, tapY);   // fire at the touch-down position
+      } else if (tapPending && !tapFired) {
+        if (abs(sx - tapX) > TAP_SLOP_PX || abs(sy - tapY) > TAP_SLOP_PX) {
+          tapPending = false;   // wandered — not a press (maybe a swipe in progress)
+        } else if (now - tapStart >= TAP_HOLD_MS) {
+          tapFired = true;
+          tapPending = false;
+          lastTouchAccept = now;
+#if TOUCH_DEBUG
+          Serial.printf("tap held=(%d,%d) screen=%d\n", tapX, tapY, currentScreen);
+#endif
+          onScreenTap(tapX, tapY);   // fire at the touch-down position
+        }
       }
     }
   } else {
     tapPending = false;   // early release = no tap
     tapFired = false;
+    swipeConsumed = false;
+    touchDownValid = false;
   }
   wasTouched = isTouched;
 }
