@@ -19,7 +19,7 @@
 // Visual theme, chosen per flash — styling only, zero effect on function.
 // 0=Midnight  1=Sepia  2=Game Boy  3=Amber  4=Ice  5=LCARS  6=Cyberpunk
 // 7=Stardew   (full table in theme.h)
-#define STAGELINK_THEME 0
+#define STAGELINK_THEME 4
 
 // Firmware version, shown on Settings > Device Info. Date-based: bump to
 // the current date whenever a firmware change ships to the boards.
