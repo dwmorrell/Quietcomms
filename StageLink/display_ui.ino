@@ -6,6 +6,9 @@
   history, and settings (see settings.ino for that one's actions).
 */
 
+// The three canned answers a question overlay offers.
+const char* const QUESTION_ANSWERS[3] = {"More", "Less", "Just Right"};
+
 // ---------------- palette & backlight ----------------
 // 24-bit theme hex -> the display's RGB565.
 uint16_t col565(uint32_t rgb) {
@@ -96,8 +99,11 @@ uint16_t contrastTextFor(uint16_t bg565) {
 }
 
 // Word-wraps label into at most maxLines, measuring at whatever font is
-// currently set. Returns the number of lines produced.
-int wrapButtonLabel(const String &label, int maxWidth, String lines[], int maxLines) {
+// currently set. Returns the number of lines produced. *truncated (if
+// given) comes back true when maxLines wasn't enough to hold the whole
+// label — callers must treat that as "doesn't fit", not as a successful
+// wrap, or the dropped words silently vanish from the button.
+int wrapButtonLabel(const String &label, int maxWidth, String lines[], int maxLines, bool *truncated = nullptr) {
   int count = 0;
   String line = "";
   int start = 0;
@@ -114,7 +120,13 @@ int wrapButtonLabel(const String &label, int maxWidth, String lines[], int maxLi
     }
     start = (spaceIdx == -1) ? len : spaceIdx + 1;
   }
-  if (line.length() && count < maxLines) lines[count++] = line;
+  bool droppedTail = (start < len);   // hit maxLines before consuming the whole label
+  if (line.length() && count < maxLines) {
+    lines[count++] = line;
+  } else if (line.length()) {
+    droppedTail = true;               // last accumulated line had no slot left
+  }
+  if (truncated) *truncated = droppedTail;
   return count;
 }
 
@@ -178,29 +190,36 @@ void flashPress(Rect r) {
   delay(80);
 }
 
+// Set by setThemeButtonFont() whenever it lands on the built-in font 2
+// fallback — that font has no bold weight, so drawThemedString() fakes one
+// (double-drawn 1px offset) rather than let the smallest step read thin
+// and less legible than every bigger step, which is Bold by construction.
+bool usingButtonFallbackFont = false;
+
 // The theme's category-button font at a shrink step: step 0 is the
 // family's biggest, each step smaller, ending at built-in font 2.
 // Returns false once past the end of the ladder.
 bool setThemeButtonFont(int step) {
+  usingButtonFallbackFont = false;
   switch (THEME.fontFamily) {
     case TF_PIXEL:
       if (step == 0) { tft.setFreeFont(&PressStart2P14pt); return true; }
-      if (step == 1) { tft.setFreeFont(NULL); tft.setTextFont(2); return true; }
+      if (step == 1) { tft.setFreeFont(NULL); tft.setTextFont(2); usingButtonFallbackFont = true; return true; }
       return false;
     case TF_SERIF:
       if (step == 0) { tft.setFreeFont(&FreeSerifBold12pt7b); return true; }
       if (step == 1) { tft.setFreeFont(&FreeSerifBold9pt7b); return true; }
-      if (step == 2) { tft.setFreeFont(NULL); tft.setTextFont(2); return true; }
+      if (step == 2) { tft.setFreeFont(NULL); tft.setTextFont(2); usingButtonFallbackFont = true; return true; }
       return false;
     case TF_MONO:
       if (step == 0) { tft.setFreeFont(&FreeMonoBold12pt7b); return true; }
       if (step == 1) { tft.setFreeFont(&FreeMonoBold9pt7b); return true; }
-      if (step == 2) { tft.setFreeFont(NULL); tft.setTextFont(2); return true; }
+      if (step == 2) { tft.setFreeFont(NULL); tft.setTextFont(2); usingButtonFallbackFont = true; return true; }
       return false;
     default:   // TF_SANS
       if (step == 0) { tft.setFreeFont(&FreeSansBold12pt7b); return true; }
       if (step == 1) { tft.setFreeFont(&FreeSansBold9pt7b); return true; }
-      if (step == 2) { tft.setFreeFont(NULL); tft.setTextFont(2); return true; }
+      if (step == 2) { tft.setFreeFont(NULL); tft.setTextFont(2); usingButtonFallbackFont = true; return true; }
       return false;
   }
 }
@@ -220,7 +239,51 @@ void setThemeTitleFont() {
 // fits — one line if it can, wrapped to two if the button is tall
 // enough — so long labels shrink instead of overflowing. bold=false
 // (nav/utility actions) always uses the plain built-in font.
-void drawButton(Rect r, const String &label, uint16_t accent, bool bold) {
+// Scans the font ladder for the smallest step at which EVERY label in a
+// group of sibling buttons fits (single line, or 2-line wrap) — so a
+// screen full of buttons picks one shared size instead of each button
+// shrinking independently to its own label's needs, which reads as
+// randomly-inconsistent type sizes across otherwise-identical buttons.
+// sample is a representative cell (grids are uniform-size, so any cell's
+// w/h works). Returns -1 if nothing in the ladder fits everything, in
+// which case callers should fall back to per-button auto-sizing.
+int pickButtonFontStep(const String labels[], int count, Rect sample) {
+  bool lcars = THEME.lcarsChrome;
+  int maxWidth = sample.w - (lcars ? sample.h / 2 + 16 : 12);
+  for (int step = 0; setThemeButtonFont(step); step++) {
+    int lh = tft.fontHeight();
+    if (lh > sample.h - 2) continue;
+    bool allFit = true;
+    for (int i = 0; i < count; i++) {
+      if (tft.textWidth(labels[i]) <= maxWidth) continue;
+      bool wraps = false;
+      if (2 * lh <= sample.h - 4) {
+        String lines[2];
+        bool truncated = false;
+        int n = wrapButtonLabel(labels[i], maxWidth, lines, 2, &truncated);
+        if (!truncated && (n == 1 || tft.textWidth(lines[n - 1]) <= maxWidth)) wraps = true;
+      }
+      if (!wraps) { allFit = false; break; }
+    }
+    if (allFit) return step;
+  }
+  return -1;
+}
+
+// Draws at the currently-set font, faking a bold weight when that font is
+// the built-in font 2 fallback (see usingButtonFallbackFont) by overdrawing
+// a 1px-right/1px-down/both cluster — a single offset copy read as barely
+// thicker; this one visibly matches the weight of the bolder ladder steps.
+void drawThemedString(const String &s, int x, int y) {
+  tft.drawString(s, x, y);
+  if (usingButtonFallbackFont) {
+    tft.drawString(s, x + 1, y);
+    tft.drawString(s, x, y + 1);
+    tft.drawString(s, x + 1, y + 1);
+  }
+}
+
+void drawButton(Rect r, const String &label, uint16_t accent, bool bold, int forcedStep) {
   bool lcars = THEME.lcarsChrome;
   if (lcars) {
     // LCARS bar: rounded cap on the left, flat right end, label pushed
@@ -255,40 +318,48 @@ void drawButton(Rect r, const String &label, uint16_t accent, bool bold) {
   }
 
   bool drawn = false;
-  for (int step = 0; !drawn && setThemeButtonFont(step); step++) {
+  int startStep = (forcedStep >= 0) ? forcedStep : 0;
+  for (int step = startStep; !drawn && setThemeButtonFont(step); step++) {
     int lh = tft.fontHeight();
-    if (lh > r.h - 2) continue;   // font taller than the button — shrink
+    if (lh > r.h - 2) { if (forcedStep >= 0) break; continue; }   // font taller than the button — shrink
     if (tft.textWidth(label) <= maxWidth) {
-      tft.drawString(label, cx, cy);
+      drawThemedString(label, cx, cy);
       drawn = true;
     } else if (2 * lh <= r.h - 4) {
       String lines[2];
-      int n = wrapButtonLabel(label, maxWidth, lines, 2);
+      bool truncated = false;
+      int n = wrapButtonLabel(label, maxWidth, lines, 2, &truncated);
       // only accept the wrap if nothing got truncated past 2 lines
-      if (n == 1 || tft.textWidth(lines[n - 1]) <= maxWidth) {
+      if (!truncated && (n == 1 || tft.textWidth(lines[n - 1]) <= maxWidth)) {
         int y = cy - (lh * n) / 2 + lh / 2;
-        for (int i = 0; i < n; i++) { tft.drawString(lines[i], cx, y); y += lh; }
+        for (int i = 0; i < n; i++) { drawThemedString(lines[i], cx, y); y += lh; }
         drawn = true;
       }
     }
+    if (forcedStep >= 0) break;   // group-uniform sizing: don't escalate past it
   }
   if (!drawn) {
     // ladder exhausted (extreme label) — best effort at the smallest font
     tft.setFreeFont(NULL);
     tft.setTextFont(2);
+    usingButtonFallbackFont = true;
     String lines[2];
     int n = wrapButtonLabel(label, maxWidth, lines, 2);
     int lh = tft.fontHeight();
     int y = cy - (lh * n) / 2 + lh / 2;
-    for (int i = 0; i < n; i++) { tft.drawString(lines[i], cx, y); y += lh; }
+    for (int i = 0; i < n; i++) { drawThemedString(lines[i], cx, y); y += lh; }
   }
 
   tft.setFreeFont(NULL);
   tft.setTextFont(2);  // back to the default built-in font for other draw calls
 }
 
+void drawButton(Rect r, const String &label, uint16_t accent, bool bold) {
+  drawButton(r, label, accent, bold, -1);
+}
+
 void drawButton(Rect r, const String &label, uint16_t accent) {
-  drawButton(r, label, accent, true);
+  drawButton(r, label, accent, true, -1);
 }
 
 void drawWrappedCentered(const String &text, int cx, int yStart, int maxWidth, int lineHeight) {
@@ -569,19 +640,91 @@ void drawHome() {
   tft.fillScreen(COL_BG);
   drawStatusBar();
   if (THEME.lcarsChrome) drawLcarsRail(32, SCREEN_H - 10);
+  if (THEME.carouselHome) { drawHomeCarousel(); return; }
+  String labels[CATEGORY_COUNT];
+  for (int i = 0; i < CATEGORY_COUNT; i++) labels[i] = CATEGORIES[i].name;
+  Rect sample = gridRect(0, CATEGORY_COUNT, contentX(), 32, contentW(), SCREEN_H - 42, 1);
+  int step = pickButtonFontStep(labels, CATEGORY_COUNT, sample);
   for (int i = 0; i < CATEGORY_COUNT; i++) {
     Rect r = gridRect(i, CATEGORY_COUNT, contentX(), 32, contentW(), SCREEN_H - 42, 1);
-    drawButton(r, CATEGORIES[i].name, altShade(colorForId(CATEGORIES[i].colorId), i));
+    drawButton(r, CATEGORIES[i].name, altShade(colorForId(CATEGORIES[i].colorId), i), true, step);
   }
 }
 
+// carouselHome themes: one category button at a time, paged with a
+// left/right swipe (trySwipeGesture) instead of a grid. Position dots
+// below show where homeCarouselIndex sits among CATEGORY_COUNT.
+Rect carouselButtonRect() { return {20, 60, SCREEN_W - 40, 150}; }
+
+void drawHomeCarousel() {
+  Rect r = carouselButtonRect();
+  const PromptCategory &cat = CATEGORIES[homeCarouselIndex];
+  uint16_t accent = colorForId(cat.colorId);
+
+  // A lone full-size button has far more room than a grid cell — try the
+  // theme's big title font (the same one the boot screen uses) instead of
+  // settling for the button ladder's 12pt ceiling, falling back to the
+  // normal shrink-to-fit ladder only if the name doesn't actually fit
+  // that big.
+  setThemeTitleFont();
+  bool lcars = THEME.lcarsChrome;
+  int maxWidth = r.w - (lcars ? r.h / 2 + 16 : 16);
+  bool bigFits = tft.fontHeight() <= r.h - 12 && tft.textWidth(cat.name) <= maxWidth;
+  tft.setFreeFont(NULL);
+  tft.setTextFont(2);
+
+  if (bigFits) {
+    shadedRoundRect(r, accent);
+    tft.drawRoundRect(r.x, r.y, r.w, r.h, btnRadius(r), COL_BORDER);
+    tft.setTextColor(contrastTextFor(accent), accent);
+    tft.setTextDatum(MC_DATUM);
+    setThemeTitleFont();
+    tft.drawString(cat.name, r.x + r.w / 2, r.y + r.h / 2 + 1);
+    tft.setFreeFont(NULL);
+    tft.setTextFont(2);
+  } else {
+    drawButton(r, cat.name, accent);   // shrink-to-fit ladder as a fallback
+  }
+
+  int cy = r.y + r.h / 2;
+  tft.fillTriangle(10, cy - 10, 10, cy + 10, 2, cy, COL_TEXT_DIM);
+  tft.fillTriangle(SCREEN_W - 10, cy - 10, SCREEN_W - 10, cy + 10, SCREEN_W - 2, cy, COL_TEXT_DIM);
+
+  int dotY = r.y + r.h + 30;
+  int spacing = 14;
+  int startX = SCREEN_W / 2 - (CATEGORY_COUNT - 1) * spacing / 2;
+  for (int i = 0; i < CATEGORY_COUNT; i++) {
+    int dx = startX + i * spacing;
+    bool active = (i == homeCarouselIndex);
+    tft.fillSmoothCircle(dx, dotY, active ? 4 : 3, active ? colorForId(CATEGORIES[i].colorId) : COL_BORDER, COL_BG);
+  }
+
+  tft.setTextColor(COL_TEXT_DIM, COL_BG);
+  tft.setTextFont(2);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("<< SWIPE >>", SCREEN_W / 2, dotY + 24);
+}
+
 void tapHome(int x, int y) {
+  if (THEME.carouselHome) {
+    Rect r = carouselButtonRect();
+    if (pointInRect(x, y, r)) {
+      flashPress(r);
+      activeCategory = homeCarouselIndex;
+      activeSubcategory = -1;
+      categoryPage = 0;
+      currentScreen = SCR_CATEGORY;
+      drawCategory();
+    }
+    return;
+  }
   for (int i = 0; i < CATEGORY_COUNT; i++) {
     Rect r = gridRect(i, CATEGORY_COUNT, contentX(), 32, contentW(), SCREEN_H - 42, 1);
     if (pointInRect(x, y, r)) {
       flashPress(r);
       activeCategory = i;
       activeSubcategory = -1;   // land on the submenu when the category has one
+      categoryPage = 0;
       currentScreen = SCR_CATEGORY;
       drawCategory();
       return;
@@ -613,17 +756,66 @@ bool onSubmenu() {
 // tapCategory uses identical geometry.
 void categoryBottomRow(Rect &back, Rect &stage, bool draw) {
 #if IS_DJ_UNIT
-  back  = {10, SCREEN_H - 36, (SCREEN_W - 24) / 2, 30};
-  stage = {14 + (SCREEN_W - 24) / 2, SCREEN_H - 36, (SCREEN_W - 24) / 2, 30};
+  // "Come to stage" is a much longer label than "Back" — give it most of
+  // the row's width so it has a real shot at fitting on one line.
+  int backW = 76;
+  back  = {10, SCREEN_H - 40, backW, 34};
+  stage = {14 + backW, SCREEN_H - 40, SCREEN_W - 24 - backW, 34};
   if (draw) {
+    // Back is a secondary nav action, not a category button — it should
+    // always read smaller than the category/message buttons, not grow to
+    // whatever the ladder's biggest fit is just because "Back" is short.
     drawButton(back, "Back", COL_PANEL, false);
-    drawButton(stage, "Come to stage", COL_ALERT, false);
+    drawButton(stage, "Come to stage", COL_ALERT);   // bold=true: needs the shrink-to-fit ladder
   }
 #else
-  back  = {10, SCREEN_H - 36, SCREEN_W - 20, 30};
+  back  = {10, SCREEN_H - 40, SCREEN_W - 20, 34};
   stage = {0, 0, 0, 0};
   if (draw) drawButton(back, "Back", COL_PANEL, false);
 #endif
+}
+
+// Item/subcat grid geometry: a fixed CATEGORY_ITEMS_PER_PAGE row slots
+// between the breadcrumb and the page-nav strip, whatever the actual list
+// length — see the CATEGORY_ITEMS_PER_PAGE comment in StageLink.ino.
+int categoryItemsAreaY() { return 48; }
+int categoryItemsAreaH() { return 190; }
+Rect categoryPageNavRect() { return {contentX(), 244, contentW(), 30}; }
+
+int categoryPageCount(int itemCount) {
+  return (itemCount + CATEGORY_ITEMS_PER_PAGE - 1) / CATEGORY_ITEMS_PER_PAGE;
+}
+
+// Draws the "< Prev  n / N  Next >" strip — a no-op when the whole list
+// already fits on one page, so short lists don't show dead controls.
+void drawCategoryPageNav(int itemCount) {
+  int pageCount = categoryPageCount(itemCount);
+  if (pageCount <= 1) return;
+  Rect nav = categoryPageNavRect();
+  bool hasPrev = categoryPage > 0;
+  bool hasNext = categoryPage < pageCount - 1;
+  Rect prevBtn = {nav.x, nav.y, 64, nav.h};
+  Rect nextBtn = {nav.x + nav.w - 64, nav.y, 64, nav.h};
+  drawButton(prevBtn, "< Prev", altShade(hasPrev ? COL_PANEL : COL_BG, 0), false);
+  drawButton(nextBtn, "Next >", altShade(hasNext ? COL_PANEL : COL_BG, 1), false);
+  tft.setTextColor(COL_TEXT_DIM, COL_BG);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(2);
+  tft.drawString(String(categoryPage + 1) + " / " + String(pageCount), nav.x + nav.w / 2, nav.y + nav.h / 2);
+}
+
+// Handles a tap on the page-nav strip; returns true if it consumed the tap.
+bool tapCategoryPageNav(int x, int y, int itemCount) {
+  int pageCount = categoryPageCount(itemCount);
+  if (pageCount <= 1) return false;
+  Rect nav = categoryPageNavRect();
+  bool hasPrev = categoryPage > 0;
+  bool hasNext = categoryPage < pageCount - 1;
+  Rect prevBtn = {nav.x, nav.y, 64, nav.h};
+  Rect nextBtn = {nav.x + nav.w - 64, nav.y, 64, nav.h};
+  if (hasPrev && pointInRect(x, y, prevBtn)) { flashPress(prevBtn); categoryPage--; drawCategory(); return true; }
+  if (hasNext && pointInRect(x, y, nextBtn)) { flashPress(nextBtn); categoryPage++; drawCategory(); return true; }
+  return false;
 }
 
 void drawCategory() {
@@ -632,7 +824,7 @@ void drawCategory() {
   tft.fillScreen(COL_BG);
   drawStatusBar();
 
-  int areaY = 48, areaH = SCREEN_H - 48 - 42;
+  int areaY = categoryItemsAreaY(), areaH = categoryItemsAreaH();
   Rect back, stage;
 
   if (THEME.lcarsChrome) drawLcarsRail(areaY, SCREEN_H - 42);
@@ -644,10 +836,19 @@ void drawCategory() {
     tft.setTextFont(2);
     tft.drawString(parent.name, contentX() + 2, 30);
 
-    for (int i = 0; i < parent.subcatCount; i++) {
-      Rect r = gridRect(i, parent.subcatCount, contentX(), areaY, contentW(), areaH, 1);
-      drawButton(r, parent.subcats[i].name, altShade(colorForId(parent.subcats[i].colorId), i));
+    String labels[MAX_GRID_LABELS];
+    int labelCount = min((int)parent.subcatCount, MAX_GRID_LABELS);
+    for (int i = 0; i < labelCount; i++) labels[i] = parent.subcats[i].name;
+    Rect sample = gridRect(0, CATEGORY_ITEMS_PER_PAGE, contentX(), areaY, contentW(), areaH, 1);
+    int step = pickButtonFontStep(labels, labelCount, sample);
+    int startIdx = categoryPage * CATEGORY_ITEMS_PER_PAGE;
+    for (int slot = 0; slot < CATEGORY_ITEMS_PER_PAGE; slot++) {
+      int i = startIdx + slot;
+      if (i >= parent.subcatCount) break;
+      Rect r = gridRect(slot, CATEGORY_ITEMS_PER_PAGE, contentX(), areaY, contentW(), areaH, 1);
+      drawButton(r, parent.subcats[i].name, altShade(colorForId(parent.subcats[i].colorId), i), true, step);
     }
+    drawCategoryPageNav(parent.subcatCount);
     categoryBottomRow(back, stage, true);
     return;
   }
@@ -661,8 +862,23 @@ void drawCategory() {
   String title = (&cat != &parent) ? String(parent.name) + " > " + cat.name : String(cat.name);
   tft.drawString(title, contentX() + 2, 30);
 
-  for (int i = 0; i < cat.itemCount; i++) {
-    Rect r = gridRect(i, cat.itemCount, contentX(), areaY, contentW(), areaH, 1);
+  // KIND_THUMBS items draw as a glyph, never as text, so they're excluded
+  // from the group's font-size pick — only the real labels need to agree.
+  // The whole category's labels are measured (not just this page's) so
+  // font size stays identical across pages, not just within one.
+  String labels[MAX_GRID_LABELS];
+  int labelCount = 0;
+  for (int i = 0; i < cat.itemCount && labelCount < MAX_GRID_LABELS; i++) {
+    if (cat.items[i].kind != KIND_THUMBS) labels[labelCount++] = cat.items[i].label;
+  }
+  Rect itemSample = gridRect(0, CATEGORY_ITEMS_PER_PAGE, contentX(), areaY, contentW(), areaH, 1);
+  int itemStep = pickButtonFontStep(labels, labelCount, itemSample);
+
+  int startIdx = categoryPage * CATEGORY_ITEMS_PER_PAGE;
+  for (int slot = 0; slot < CATEGORY_ITEMS_PER_PAGE; slot++) {
+    int i = startIdx + slot;
+    if (i >= cat.itemCount) break;
+    Rect r = gridRect(slot, CATEGORY_ITEMS_PER_PAGE, contentX(), areaY, contentW(), areaH, 1);
     uint16_t accent = altShade(colorForId(cat.colorId), i);
     if (cat.items[i].kind == KIND_THUMBS) {
       // thumbs-up renders as a drawn glyph, never as font text; sized to
@@ -673,14 +889,15 @@ void drawCategory() {
                       contrastTextFor(accent), accent);
     } else {
       // drawButton's font ladder shrinks labels to fit even short rows
-      drawButton(r, cat.items[i].label, accent, true);
+      drawButton(r, cat.items[i].label, accent, true, itemStep);
     }
-    drawSwipeHint(r, contrastTextFor(accent));   // items are swipe-to-send
+    if (THEME.swipeToSend) drawSwipeHint(r, contrastTextFor(accent));
   }
+  drawCategoryPageNav(cat.itemCount);
 
   categoryBottomRow(back, stage, true);
 #if IS_DJ_UNIT
-  drawSwipeHint(stage, contrastTextFor(COL_ALERT));
+  if (THEME.swipeToSend) drawSwipeHint(stage, contrastTextFor(COL_ALERT));
 #endif
 
   // A full redraw paints over an in-flight ack check — put it back if the
@@ -692,22 +909,41 @@ void drawCategory() {
   }
 }
 
+#if IS_DJ_UNIT
+// The DJ's standing "Come to stage" escape hatch — shared by the tap path
+// (swipeToSend off) and the swipe path (trySwipeGesture, swipeToSend on).
+void sendStageUrgent(Rect stage) {
+  sendPromptMessage("Urgent", "Come to stage");
+  pendingAckText = "Come to stage";
+  pendingAckCategory = activeCategory;
+  pendingAckSubcategory = activeSubcategory;
+  pendingAckRect = stage;
+  flashSent(stage, COL_ALERT);
+}
+#endif
+
 void tapCategory(int x, int y) {
   const PromptCategory &parent = CATEGORIES[activeCategory];
-  int areaY = 48, areaH = SCREEN_H - 48 - 42;
+  int areaY = categoryItemsAreaY(), areaH = categoryItemsAreaH();
   Rect back, stage;
   categoryBottomRow(back, stage, false);
 
 #if IS_DJ_UNIT
-  if (pointInRect(x, y, stage)) { showSwipeNudge(stage); return; }   // send = swipe only
+  if (pointInRect(x, y, stage)) {
+    if (THEME.swipeToSend) showSwipeNudge(stage);
+    else sendStageUrgent(stage);
+    return;
+  }
 #endif
   if (pointInRect(x, y, back)) {
     flashPress(back);
     if (parent.subcats && activeSubcategory >= 0) {
-      // child list -> back to the submenu
+      // child list -> back to the submenu (a different list: reset paging)
       activeSubcategory = -1;
+      categoryPage = 0;
       drawCategory();
     } else {
+      if (THEME.carouselHome) homeCarouselIndex = activeCategory;
       currentScreen = SCR_HOME;
       drawHome();
     }
@@ -715,11 +951,16 @@ void tapCategory(int x, int y) {
   }
 
   if (onSubmenu()) {
-    for (int i = 0; i < parent.subcatCount; i++) {
-      Rect r = gridRect(i, parent.subcatCount, contentX(), areaY, contentW(), areaH, 1);
+    if (tapCategoryPageNav(x, y, parent.subcatCount)) return;
+    int startIdx = categoryPage * CATEGORY_ITEMS_PER_PAGE;
+    for (int slot = 0; slot < CATEGORY_ITEMS_PER_PAGE; slot++) {
+      int i = startIdx + slot;
+      if (i >= parent.subcatCount) break;
+      Rect r = gridRect(slot, CATEGORY_ITEMS_PER_PAGE, contentX(), areaY, contentW(), areaH, 1);
       if (pointInRect(x, y, r)) {
         flashPress(r);
         activeSubcategory = i;
+        categoryPage = 0;   // entering the child's item list: a different list
         drawCategory();
         return;
       }
@@ -727,11 +968,20 @@ void tapCategory(int x, int y) {
     return;
   }
 
-  // leaf items are swipe-to-send — a tap just teaches the gesture
+  // leaf items: swipeToSend themes require the swipe gesture (a tap just
+  // teaches it); otherwise the ordinary hold-to-confirm tap fires the send.
   const PromptCategory &cat = *currentCatDef();
-  for (int i = 0; i < cat.itemCount; i++) {
-    Rect r = gridRect(i, cat.itemCount, contentX(), areaY, contentW(), areaH, 1);
-    if (pointInRect(x, y, r)) { showSwipeNudge(r); return; }
+  if (tapCategoryPageNav(x, y, cat.itemCount)) return;
+  int startIdx = categoryPage * CATEGORY_ITEMS_PER_PAGE;
+  for (int slot = 0; slot < CATEGORY_ITEMS_PER_PAGE; slot++) {
+    int i = startIdx + slot;
+    if (i >= cat.itemCount) break;
+    Rect r = gridRect(slot, CATEGORY_ITEMS_PER_PAGE, contentX(), areaY, contentW(), areaH, 1);
+    if (pointInRect(x, y, r)) {
+      if (THEME.swipeToSend) showSwipeNudge(r);
+      else activateCategoryItem(i, r);
+      return;
+    }
   }
 }
 
@@ -763,53 +1013,47 @@ void activateCategoryItem(int i, Rect r) {
 // (cx2,cy2), fire the send button being swiped, if any. Called from
 // handleTouch on every touch movement; returns true when a send fired.
 bool trySwipeGesture(int dx, int dy, int cx2, int cy2) {
+  if (currentScreen == SCR_HOME) {
+    if (!THEME.carouselHome) return false;
+    Rect r = carouselButtonRect();
+    if (!pointInRect(dx, dy, r)) return false;      // must start on the button
+    if (abs(cy2 - dy) > SWIPE_BAND) return false;   // stay in its lane
+    int travel = cx2 - dx;
+    if (travel <= -SWIPE_DIST) {
+      homeCarouselIndex = (homeCarouselIndex + 1) % CATEGORY_COUNT;
+      drawHomeCarousel();
+      return true;
+    }
+    if (travel >= SWIPE_DIST) {
+      homeCarouselIndex = (homeCarouselIndex - 1 + CATEGORY_COUNT) % CATEGORY_COUNT;
+      drawHomeCarousel();
+      return true;
+    }
+    return false;
+  }
   if (currentScreen == SCR_CATEGORY) {
+    if (!THEME.swipeToSend) return false;   // sends fire on tap instead (see tapCategory)
     if (activeCategory < 0 || activeCategory >= CATEGORY_COUNT) return false;
     if (onSubmenu()) return false;   // submenu rows are navigation, not sends
     const PromptCategory &cat = *currentCatDef();
-    int areaY = 48, areaH = SCREEN_H - 48 - 42;
-    for (int i = 0; i < cat.itemCount; i++) {
-      Rect r = gridRect(i, cat.itemCount, contentX(), areaY, contentW(), areaH, 1);
+    int areaY = categoryItemsAreaY(), areaH = categoryItemsAreaH();
+    int startIdx = categoryPage * CATEGORY_ITEMS_PER_PAGE;
+    for (int slot = 0; slot < CATEGORY_ITEMS_PER_PAGE; slot++) {
+      int i = startIdx + slot;
+      if (i >= cat.itemCount) break;
+      Rect r = gridRect(slot, CATEGORY_ITEMS_PER_PAGE, contentX(), areaY, contentW(), areaH, 1);
       if (swipeHit(r, dx, dy, cx2, cy2)) { activateCategoryItem(i, r); return true; }
     }
 #if IS_DJ_UNIT
     Rect back, stage;
     categoryBottomRow(back, stage, false);
-    if (swipeHit(stage, dx, dy, cx2, cy2)) {
-      sendPromptMessage("Urgent", "Come to stage");
-      pendingAckText = "Come to stage";
-      pendingAckCategory = activeCategory;
-      pendingAckSubcategory = activeSubcategory;
-      pendingAckRect = stage;
-      flashSent(stage, COL_ALERT);
-      return true;
-    }
+    if (swipeHit(stage, dx, dy, cx2, cy2)) { sendStageUrgent(stage); return true; }
 #endif
     return false;
   }
 
-  if (currentScreen == SCR_INCOMING) {
-    if (incomingIsQuestion) {
-      for (int i = 0; i < 3; i++) {
-        Rect r = questionAnswerRect(i);
-        if (swipeHit(r, dx, dy, cx2, cy2)) {
-          sendTransient(QUESTION_ANSWERS[i]);
-          incomingIsQuestion = false;
-          incomingAcked = true;
-          dismissIncoming();
-          return true;
-        }
-      }
-      return false;
-    }
-    Rect seenBtn = {30, 240, SCREEN_W - 60, 56};
-    if (swipeHit(seenBtn, dx, dy, cx2, cy2)) {
-      sendAck(incomingText);
-      incomingAcked = true;
-      dismissIncoming();
-      return true;
-    }
-  }
+  // Incoming acks/answers are tap-only now (see tapIncoming) — only the
+  // initial message send above is swipe-gated.
   return false;
 }
 
@@ -874,9 +1118,6 @@ void backlightBoostForAlert() {
   setBacklight(boosted);
 }
 
-// The three canned answers a question overlay offers.
-const char* const QUESTION_ANSWERS[3] = {"More", "Less", "Just Right"};
-
 Rect questionAnswerRect(int i) {
   return {30, 196 + i * 42, SCREEN_W - 60, 34};
 }
@@ -904,16 +1145,15 @@ void drawIncoming() {
 
   if (incomingIsQuestion) {
     // A question is answered, not "seen": three stacked canned answers
-    // replace the Seen button; swiping one both replies and closes.
+    // replace the Seen button; a tap replies and closes.
     for (int i = 0; i < 3; i++) {
       Rect r = questionAnswerRect(i);
       drawButton(r, QUESTION_ANSWERS[i], altShade(COL_PANEL, i), false);
-      drawSwipeHint(r, COL_TEXT);
     }
     return;
   }
 
-  // Single-state green Seen button — swiping it acknowledges AND closes.
+  // Single-state green Seen button — tapping it acknowledges AND closes.
   Rect seenBtn = {30, 240, SCREEN_W - 60, 56};
   shadedRoundRect(seenBtn, COL_GREEN);
   tft.drawRoundRect(seenBtn.x, seenBtn.y, seenBtn.w, seenBtn.h, btnRadius(seenBtn), COL_BORDER);
@@ -921,20 +1161,29 @@ void drawIncoming() {
   tft.setTextDatum(MC_DATUM);
   tft.setTextFont(2);
   tft.drawString("Seen", seenBtn.x + seenBtn.w / 2, seenBtn.y + seenBtn.h / 2);
-  drawSwipeHint(seenBtn, contrastTextFor(COL_GREEN));
 }
 
 void tapIncoming(int x, int y) {
-  // acks and answers are sends — swipe only; a tap teaches the gesture
+  // acks and answers fire on tap — only the initial message send is swipe-gated
   if (incomingIsQuestion) {
     for (int i = 0; i < 3; i++) {
       Rect r = questionAnswerRect(i);
-      if (pointInRect(x, y, r)) { showSwipeNudge(r); return; }
+      if (pointInRect(x, y, r)) {
+        sendTransient(QUESTION_ANSWERS[i]);
+        incomingIsQuestion = false;
+        incomingAcked = true;
+        dismissIncoming();
+        return;
+      }
     }
     return;
   }
   Rect seenBtn = {30, 240, SCREEN_W - 60, 56};
-  if (pointInRect(x, y, seenBtn)) { showSwipeNudge(seenBtn); return; }
+  if (pointInRect(x, y, seenBtn)) {
+    sendAck(incomingText);
+    incomingAcked = true;
+    dismissIncoming();
+  }
 }
 
 // Redraws whichever regular screen `s` names (overlays are not restorable
@@ -961,27 +1210,31 @@ void dismissIncoming() {
 // by question answers ("More"/"Less"/"Just Right") and the thumbs-up.
 #define TRANSIENT_SHOW_MS 1500
 
-// Smooth-primitive thumbs-up (same construction as the boot reel): a solid
-// rounded fist with three finger-crease lines knocked out in the surface
-// color, and a thumb column merged into its top-left. u is the unit size
-// (glyph spans ~16u square); bg is the surface behind the glyph, needed
-// for the anti-aliased edges. Geometry prototyped in thumb_preview.ps1.
+// Real thumbs-up silhouette (traced from images/thumbs up.jpg — see
+// thumb_cutout.ps1 and thumb_gen_header.ps1), stored as a small alpha mask
+// in thumb_icon.h and recolored per-theme at draw time. u is the unit size
+// (glyph spans ~16u square, matching the old vector glyph's call sites);
+// bg is the surface behind the glyph, needed to blend the mask's
+// anti-aliased edges since the display can't be read back for true alpha.
 void drawThumbsGlyph(int cx, int cy, float u, uint16_t color, uint16_t bg) {
-  int ox = cx - (int)(8.0f * u);
-  int oy = cy - (int)(8.0f * u);
-  tft.fillSmoothRoundRect(ox + (int)(2.6f * u), oy + (int)(6.4f * u),
-                          (int)(12.0f * u), (int)(9.2f * u), (int)(2.4f * u), color, bg);
-  for (int i = 1; i <= 3; i++) {
-    int y = oy + (int)((6.4f + i * 2.3f) * u);
-    tft.fillSmoothRoundRect(ox + (int)(7.0f * u), y,
-                            (int)(8.2f * u), max(1, (int)(0.55f * u)),
-                            max(1, (int)(0.27f * u)), bg, color);
+  int destH = max(1, (int)(16.0f * u));
+  int destW = max(1, (int)(destH * (float)THUMB_ICON_W / THUMB_ICON_H));
+  int x0 = cx - destW / 2;
+  int y0 = cy - destH / 2;
+  for (int dy = 0; dy < destH; dy++) {
+    int sy = (int)((long)dy * THUMB_ICON_H / destH);
+    if (sy >= THUMB_ICON_H) sy = THUMB_ICON_H - 1;
+    for (int dx = 0; dx < destW; dx++) {
+      int sx = (int)((long)dx * THUMB_ICON_W / destW);
+      if (sx >= THUMB_ICON_W) sx = THUMB_ICON_W - 1;
+      uint8_t a = THUMB_ICON_ALPHA[sy * THUMB_ICON_W + sx];
+      if (a == 0) continue;
+      tft.drawPixel(x0 + dx, y0 + dy, blend565(bg, color, a));
+    }
   }
-  tft.fillSmoothRoundRect(ox + (int)(2.0f * u), oy + (int)(1.0f * u),
-                          (int)(4.2f * u), (int)(8.0f * u), (int)(2.1f * u), color, bg);
 }
 
-void showTransient(const String &text) {
+void showTransient(const String &text, const char *subtitleOverride = nullptr) {
   if (currentScreen != SCR_TRANSIENT) savedScreenBeforeTransient = currentScreen;
   // never trap an overlay as the restore target
   if (savedScreenBeforeTransient == SCR_INCOMING) savedScreenBeforeTransient = savedScreenBeforeIncoming;
@@ -1079,6 +1332,22 @@ void markHistoryAcked(const String &text) {
     ackCheckSubcategory = pendingAckSubcategory;
     ackCheckRect = pendingAckRect;
     ackCheckLastFrame = -1;
+
+    // The on-button checkmark above only ever renders if the sender is
+    // still sitting on the exact category screen the button lives on —
+    // in normal use they've long since moved on (sent, then went back to
+    // Home or somewhere else) by the time the peer's ack comes back, so
+    // that checkmark silently never gets seen. Fall back to the same
+    // screen-agnostic transient toast used for incoming replies, so a
+    // "seen" ack is never missed regardless of what's on screen — except
+    // while actively reading an incoming message, where interrupting
+    // would risk dropping back to the wrong screen once the toast clears.
+    bool onOwningScreen = (currentScreen == SCR_CATEGORY &&
+                           activeCategory == ackCheckCategory &&
+                           activeSubcategory == ackCheckSubcategory);
+    if (!onOwningScreen && currentScreen != SCR_INCOMING) {
+      showTransient(text, "Seen");
+    }
   }
 
   for (int i = 0; i < historyCount; i++) {

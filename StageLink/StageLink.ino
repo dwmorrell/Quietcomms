@@ -17,9 +17,9 @@
 #define IS_DJ_UNIT 1   // 1 = DJ booth unit, 0 = FOH unit. Set per board before flashing.
 
 // Visual theme, chosen per flash — styling only, zero effect on function.
-// 0=Midnight  1=Sepia  2=Game Boy  3=Amber  4=Ice  5=LCARS  6=Cyberpunk
+// 0=Midnight  1=Sepia  2=Game Boy  3=Amber  4=Ice  5=LCARS  6=Cyberpunk 2077
 // 7=Stardew   (full table in theme.h)
-#define STAGELINK_THEME 4
+#define STAGELINK_THEME 6
 
 // Firmware version, shown on Settings > Device Info. Date-based: bump to
 // the current date whenever a firmware change ships to the boards.
@@ -45,6 +45,7 @@
 #include "PressStart2P16pt.h"
 #include "PressStart2P14pt.h"
 #include "theme.h"
+#include "thumb_icon.h"
 #include <WiFi.h>
 #include <esp_wifi.h>   // esp_wifi_ap_get_sta_list: per-station RSSI when FOH hosts Direct Link
 #include <WiFiUdp.h>
@@ -113,6 +114,17 @@ struct HistoryEntry {
 };
 #define HISTORY_MAX 8
 
+// Upper bound on labels pickButtonFontStep() sizes at once (a category's
+// items, or a submenu's subcategories) — headroom above prompts.h's
+// largest list (Hospitality/Quick Comms, 7 items) for future growth.
+#define MAX_GRID_LABELS 8
+
+// Category/submenu screens always lay out this many row slots, whatever
+// the actual list length — paging through the rest via categoryPageNavRect
+// (display_ui.ino) instead of shrinking every row to cram everything onto
+// one screen. Keeps button/font size identical across every category.
+#define CATEGORY_ITEMS_PER_PAGE 4
+
 enum NetMode { MODE_DIRECT = 0, MODE_VENUE = 1 };
 enum Screen  { SCR_HOME, SCR_CATEGORY, SCR_INCOMING, SCR_HISTORY, SCR_SETTINGS, SCR_DEVINFO, SCR_TRANSIENT };
 
@@ -148,6 +160,10 @@ Screen currentScreen = SCR_HOME;
 
 int activeCategory = -1;
 int activeSubcategory = -1;   // -1 = showing the parent's submenu (or a leaf category)
+int homeCarouselIndex = 0;    // carouselHome themes only: which category the home screen shows
+int categoryPage = 0;         // which page of the submenu/item grid is showing (see categoryBottomRow's
+                               // neighbor categoryPageNavRect in display_ui.ino) — reset on every
+                               // navigation that changes which list is on screen
 Screen savedScreenBeforeIncoming = SCR_HOME;
 bool wsConnected = false;
 uint8_t backlightLevel = 55;     // 0-100, normal dark-room-friendly default
@@ -174,12 +190,13 @@ bool wasTouched = false;
 unsigned long lastTouchAccept = 0;
 
 // Intentional-press gate: a touch must stay put this long before it counts
-// as a tap, so a graze can't fire a button. Release early = no tap.
-// Message-send buttons don't tap at all — they require a left-to-right
-// SWIPE across the button (trySwipeGesture in display_ui.ino), which is
-// impossible to trigger accidentally.
-#define TAP_HOLD_MS 200
-#define TAP_SLOP_PX 18
+// as a tap, so a graze can't fire a button. Release early = no tap. This is
+// the only accidental-press guard for message-send buttons unless a theme
+// opts into swipeToSend (trySwipeGesture in display_ui.ino) instead.
+// Loosened from 200ms/18px after real-hardware testing found the tighter
+// gate made ordinary taps on the resistive touchscreen feel unreliable.
+#define TAP_HOLD_MS 150
+#define TAP_SLOP_PX 26
 #define SWIPE_DIST  90    // horizontal travel to complete a swipe-send
 #define SWIPE_BAND  26    // max vertical wander during a swipe
 bool tapPending = false;

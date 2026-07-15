@@ -35,6 +35,10 @@ struct ThemeSpec {
   bool useBevel;
   uint8_t fontFamily;                // ThemeFont
   bool lcarsChrome;                  // LCARS screen chrome: sidebar rail + capped bars
+  bool carouselHome;                 // home screen shows one category at a time,
+                                      // swipe left/right to page (see drawHomeCarousel)
+  bool swipeToSend;                  // message-send buttons require a swipe instead of
+                                      // a tap; off = the ordinary hold-to-confirm tap gate
 };
 
 const ThemeSpec THEMES[] = {
@@ -62,10 +66,17 @@ const ThemeSpec THEMES[] = {
   {"LCARS",     0x000000, 0x1A1A2E, 0xFFFFFF, 0x9090B8,
                 0xFF9C00, 0xFFCC99, 0xCC99CC, 0xD14C4C, 0xFFFFFF,
                 0x000000, 0x66CC66, 0xFFCC00, 99, false, TF_SANS, true},
-  // 6 Cyberpunk - near-black + neon yellow/cyan/magenta, hard corners, mono
-  {"Cyberpunk", 0x0A0A12, 0x181820, 0xFCEE0A, 0x6A6A80,
-                0x262636, 0x00B8C8, 0xE93CAC, 0xFF2E5B, 0xFCEE0A,
-                0x3A3A50, 0x39FF88, 0xFCEE0A, 4,  false, TF_MONO, false},
+  // 6 Synthwave - deep purple-black + 80s Outrun magenta/purple/cyan,
+  // hard corners, mono, ordinary multi-button grid home screen. Replaced
+  // the yellow-dominant "Cyberpunk 2077" look (archived in themes-archive/)
+  // after real-hardware feedback that it read as too monochrome/boring;
+  // the single-button carousel home screen it launched with (drawHomeCarousel)
+  // didn't land either, so this reverts to the standard grid every other
+  // theme uses. carouselHome stays available as a per-theme opt-in, just
+  // unused for now — same as swipeToSend.
+  {"Synthwave", 0x0B0014, 0x1E0B33, 0xF5EFFF, 0x8E7DA8,
+                0xFF2FB4, 0x8B2FFF, 0x00E5FF, 0xFF3B3B, 0xF5EFFF,
+                0x3A2050, 0x39FF6A, 0xFFB020, 3,  false, TF_MONO, false, false},
   // 7 Stardew Valley - warm wood browns + cream, storybook serif
   {"Stardew",   0x3A2415, 0x5C3A21, 0xF7E7C6, 0xB08A5E,
                 0x6E4A2A, 0x9C6B3F, 0xC89A62, 0xC0392B, 0xF7E7C6,
