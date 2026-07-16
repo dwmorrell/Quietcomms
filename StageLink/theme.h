@@ -35,6 +35,10 @@ struct ThemeSpec {
   bool useBevel;
   uint8_t fontFamily;                // ThemeFont
   bool lcarsChrome;                  // LCARS screen chrome: sidebar rail + capped bars
+  bool carouselHome;                 // home screen shows one category at a time,
+                                      // swipe left/right to page (see drawHomeCarousel)
+  bool swipeToSend;                  // message-send buttons require a swipe instead of
+                                      // a tap; off = the ordinary hold-to-confirm tap gate
 };
 
 const ThemeSpec THEMES[] = {
@@ -62,10 +66,11 @@ const ThemeSpec THEMES[] = {
   {"LCARS",     0x000000, 0x1A1A2E, 0xFFFFFF, 0x9090B8,
                 0xFF9C00, 0xFFCC99, 0xCC99CC, 0xD14C4C, 0xFFFFFF,
                 0x000000, 0x66CC66, 0xFFCC00, 99, false, TF_SANS, true},
-  // 6 Cyberpunk - near-black + neon yellow/cyan/magenta, hard corners, mono
-  {"Cyberpunk", 0x0A0A12, 0x181820, 0xFCEE0A, 0x6A6A80,
-                0x262636, 0x00B8C8, 0xE93CAC, 0xFF2E5B, 0xFCEE0A,
-                0x3A3A50, 0x39FF88, 0xFCEE0A, 4,  false, TF_MONO, false},
+  // 6 Cyberpunk 2077 - pure black + neon yellow/cyan/magenta, hard corners,
+  // mono, single-button carousel home screen (see drawHomeCarousel)
+  {"Cyberpunk 2077", 0x000000, 0x16161F, 0xF2F2F0, 0x8A8A99,
+                0xF4E10A, 0x00E5FF, 0xFF2E9A, 0xFF3B3B, 0x39FF6A,
+                0x2A2A38, 0x39FF6A, 0xF4E10A, 3,  false, TF_MONO, false, true},
   // 7 Stardew Valley - warm wood browns + cream, storybook serif
   {"Stardew",   0x3A2415, 0x5C3A21, 0xF7E7C6, 0xB08A5E,
                 0x6E4A2A, 0x9C6B3F, 0xC89A62, 0xC0392B, 0xF7E7C6,

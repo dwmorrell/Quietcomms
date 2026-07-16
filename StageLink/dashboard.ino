@@ -12,12 +12,12 @@
     Venue WiFi mode — browse to the FOH unit's IP, shown on its
     Settings screen under CONNECTION.
 
-  The DJ unit compiles empty stubs: FOH is the hub, so it's the one
-  place with a full picture (its own state plus whether the DJ unit is
-  linked and, in Direct Link mode, the DJ's radio signal strength).
+  Every other unit compiles empty stubs: FOH is the hub, so it's the one
+  place with a full picture (its own state plus which of DJ / Stage
+  Manager / Event Manager are currently linked).
 */
 
-#if !IS_DJ_UNIT
+#if IS_FOH
 
 #include <WebServer.h>
 WebServer dashboard(80);
@@ -43,7 +43,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html><html><head><m
 </style></head><body>
 <h1>STAGELINK &middot; FOH</h1>
 <div class="cards" id="cards"></div>
-<table><thead><tr><th>Dir</th><th>Category</th><th>Message</th><th>Age</th><th>Seen</th></tr></thead><tbody id="log"></tbody></table>
+<table><thead><tr><th>Dir</th><th>Role</th><th>Category</th><th>Message</th><th>Age</th><th>Seen</th></tr></thead><tbody id="log"></tbody></table>
 <div class="muted">Read-only view. Newest messages first. Auto-refreshes every 2.5s.</div>
 <script>
 async function tick(){
@@ -51,10 +51,10 @@ async function tick(){
   const r=await fetch('/status.json');const s=await r.json();
   const c=[["Link",s.link?"Connected":"Waiting",s.link?"ok":"bad"],
    ["Mode",s.mode,""],["WiFi",s.ssid,""],["IP",s.ip,""],
-   [s.rssiLabel,s.rssi,""],["DJ radio",s.djRssi,""],
+   [s.rssiLabel,s.rssi,""],["Linked",s.linked,""],
    ["Uptime",s.uptime,""],["Firmware",s.fw,""],["Free RAM",s.heap,""]];
   document.getElementById('cards').innerHTML=c.map(x=>`<div class="card"><div class="k">${x[0]}</div><div class="v ${x[2]}">${x[1]}</div></div>`).join('');
-  document.getElementById('log').innerHTML=s.log.map(m=>`<tr><td class="${m.in?'in':'out'}">${m.in?'IN':'OUT'}</td><td>${m.cat}</td><td>${m.text}</td><td>${m.age}</td><td class="seen">${m.ack?'&#10003;':''}</td></tr>`).join('');
+  document.getElementById('log').innerHTML=s.log.map(m=>`<tr><td class="${m.in?'in':'out'}">${m.in?'IN':'OUT'}</td><td>${m.role}</td><td>${m.cat}</td><td>${m.text}</td><td>${m.age}</td><td class="seen">${m.ack?'&#10003;':''}</td></tr>`).join('');
  }catch(e){}
  setTimeout(tick,2500);
 }
@@ -73,26 +73,34 @@ String jsonEscape(const String &s) {
 }
 
 void handleDashboardStatus() {
-  String ssid, ip, rssiLabel, rssiVal, djRssi = "-";
+  String ssid, ip, rssiLabel, rssiVal;
   if (netMode == MODE_DIRECT) {
     ssid = DIRECT_AP_SSID;
     ip = WiFi.softAPIP().toString();
     rssiLabel = "Devices";
     rssiVal = String(WiFi.softAPgetStationNum()) + " joined";
-    wifi_sta_list_t staList;
-    if (esp_wifi_ap_get_sta_list(&staList) == ESP_OK && staList.num > 0) {
-      djRssi = String(staList.sta[0].rssi) + " dBm";
-    }
   } else {
     ssid = WiFi.SSID();
     ip = WiFi.localIP().toString();
     rssiLabel = "Signal";
     rssiVal = (WiFi.status() == WL_CONNECTED) ? String(WiFi.RSSI()) + " dBm" : "-";
-    djRssi = wsConnected ? "linked" : "-";
   }
   if (ssid.length() == 0) ssid = "-";
   unsigned long up = millis() / 1000;
   String uptime = String(up / 3600) + "h " + String((up % 3600) / 60) + "m";
+
+  // Which of the 3 other units are actually connected right now — a single
+  // wsConnected bool can no longer say which, now that more than one can
+  // be up at once (Direct Link supports up to 3 simultaneous stations).
+  String linked = "";
+  const uint8_t peerRoles[3] = { ROLE_DJ, ROLE_STAGE_MGR, ROLE_EVENT_MGR };
+  for (int i = 0; i < 3; i++) {
+    if (clientNumForRole(peerRoles[i]) != NO_CLIENT) {
+      if (linked.length()) linked += ", ";
+      linked += roleAbbrev(peerRoles[i]);
+    }
+  }
+  if (!linked.length()) linked = "none";
 
   String json = "{";
   json += "\"link\":" + String(wsConnected ? "true" : "false") + ",";
@@ -101,7 +109,7 @@ void handleDashboardStatus() {
   json += "\"ip\":\"" + ip + "\",";
   json += "\"rssiLabel\":\"" + rssiLabel + "\",";
   json += "\"rssi\":\"" + rssiVal + "\",";
-  json += "\"djRssi\":\"" + djRssi + "\",";
+  json += "\"linked\":\"" + linked + "\",";
   json += "\"uptime\":\"" + uptime + "\",";
   json += "\"fw\":\"" FW_VERSION "\",";
   json += "\"heap\":\"" + String(ESP.getFreeHeap() / 1024) + " KB\",";
@@ -109,6 +117,7 @@ void handleDashboardStatus() {
   for (int i = 0; i < historyCount; i++) {
     if (i) json += ",";
     json += "{\"in\":" + String(history[i].incoming ? "true" : "false");
+    json += ",\"role\":\"" + String(roleAbbrev(history[i].role)) + "\"";
     json += ",\"cat\":\"" + jsonEscape(history[i].category) + "\"";
     json += ",\"text\":\"" + jsonEscape(history[i].text) + "\"";
     json += ",\"age\":\"" + relativeTime(history[i].atMillis) + "\"";
@@ -129,7 +138,7 @@ void serviceDashboard() {
 }
 
 #else
-// DJ unit: no dashboard — FOH is the hub with the full picture.
+// Non-FOH units: no dashboard — FOH is the hub with the full picture.
 void startDashboard() {}
 void serviceDashboard() {}
 #endif

@@ -4,26 +4,66 @@
   Board:  ESP32-2432S028R "Cheap Yellow Display" (2.8", resistive touch)
   ============================================================
 
-  ONE SKETCH, TWO BOARDS:
-  Set IS_DJ_UNIT below, upload to the DJ booth board.
-  Flip it to 0, upload to the FOH board.
-  That single line is the only difference between the two units.
+  ONE SKETCH, FOUR BOARDS:
+  Set UNIT_ROLE below, upload to that unit's board. FOH is always the
+  WebSocket server (hub); DJ, Stage Manager, and Event Manager are all
+  WebSocket clients of FOH. That one line is the only difference
+  between what gets flashed to each of the four units.
 
   Before this will compile you need to install 4 libraries and
   configure TFT_eSPI once. Full steps are in README.md.
 */
 
 // ---------------- 1. ROLE ----------------
-#define IS_DJ_UNIT 1   // 1 = DJ booth unit, 0 = FOH unit. Set per board before flashing.
+// Plain #defines, not a C++ enum: these gate #if blocks throughout the
+// sketch (library includes, server-vs-client object declarations), and
+// the preprocessor can't see enum values — only macros expand before it
+// runs.
+#define ROLE_DJ         0
+#define ROLE_FOH        1
+#define ROLE_STAGE_MGR  2
+#define ROLE_EVENT_MGR  3
+#define ROLE_UNKNOWN    255   // WS server client slot not yet identified
+#define NO_CLIENT       255   // clientNumForRole() found no connected client for that role
+
+#define UNIT_ROLE ROLE_FOH   // set per board before flashing: ROLE_DJ / ROLE_FOH / ROLE_STAGE_MGR / ROLE_EVENT_MGR
+#define IS_FOH (UNIT_ROLE == ROLE_FOH)   // only FOH ever runs the WebSocket server (hub) — every other role is a client of it
+
+// Wire-protocol destRole sentinels (see PromptCategory.destRole in
+// prompts.h) — resolved to a real role at send time by resolveDestRole()
+// in network.ino.
+#define DEST_HOSPITALITY     253   // Event Manager if connected, else FOH — 60s ack-timeout escalation
+#define DEST_REPLY_TO_SENDER 254   // whichever unit sent the message currently being replied to
+
+const char* roleName(uint8_t role) {
+  switch (role) {
+    case ROLE_DJ:        return "DJ";
+    case ROLE_FOH:       return "FOH";
+    case ROLE_STAGE_MGR: return "Stage Mgr";
+    case ROLE_EVENT_MGR: return "Event Mgr";
+    default:             return "?";
+  }
+}
+
+// Short form for the tight History row — roleName()'s full labels don't fit.
+const char* roleAbbrev(uint8_t role) {
+  switch (role) {
+    case ROLE_DJ:        return "DJ";
+    case ROLE_FOH:       return "FOH";
+    case ROLE_STAGE_MGR: return "SM";
+    case ROLE_EVENT_MGR: return "EM";
+    default:             return "?";
+  }
+}
 
 // Visual theme, chosen per flash — styling only, zero effect on function.
-// 0=Midnight  1=Sepia  2=Game Boy  3=Amber  4=Ice  5=LCARS  6=Cyberpunk
+// 0=Midnight  1=Sepia  2=Game Boy  3=Amber  4=Ice  5=LCARS  6=Cyberpunk 2077
 // 7=Stardew   (full table in theme.h)
-#define STAGELINK_THEME 4
+#define STAGELINK_THEME 5
 
 // Firmware version, shown on Settings > Device Info. Date-based: bump to
 // the current date whenever a firmware change ships to the boards.
-#define FW_VERSION "v2026.07.14"
+#define FW_VERSION "v2026.07.15"
 
 // ---------------- 2. LIBRARIES ----------------
 #include <SPI.h>
@@ -45,15 +85,16 @@
 #include "PressStart2P16pt.h"
 #include "PressStart2P14pt.h"
 #include "theme.h"
+#include "thumb_icon.h"
 #include <WiFi.h>
 #include <esp_wifi.h>   // esp_wifi_ap_get_sta_list: per-station RSSI when FOH hosts Direct Link
 #include <WiFiUdp.h>
 #include <WiFiManager.h>
 #include <Preferences.h>
-#if IS_DJ_UNIT
-  #include <WebSocketsClient.h>
-#else
+#if IS_FOH
   #include <WebSocketsServer.h>
+#else
+  #include <WebSocketsClient.h>
 #endif
 #include "prompts.h"
 
@@ -101,6 +142,12 @@
 #define DISCOVERY_PORT  4210
 const IPAddress DIRECT_FOH_IP(192, 168, 4, 1); // FOH is always the AP host in Direct Link mode
 
+// WS connection path, one per role — doubles as FOH's primary mechanism for
+// identifying which role just connected (WStype_CONNECTED's payload is the
+// client's requested URL path, read synchronously with no extra round
+// trip). FOH doesn't connect anywhere, but keeps a slot for index symmetry.
+const char* const WS_PATH_BY_ROLE[] = { "/dj", "/foh", "/stagemgr", "/eventmgr" };
+
 // ---------------- 7. SHARED TYPES (kept here so every tab can see them) ----------------
 struct Rect { int x, y, w, h; };
 
@@ -110,8 +157,45 @@ struct HistoryEntry {
   bool incoming;
   bool acked;
   unsigned long atMillis;
+  uint8_t role;   // for incoming: the sender; for outgoing: who this unit actually sent the WS frame to
 };
 #define HISTORY_MAX 8
+
+// A message queued to display next on the incoming overlay — needed once a
+// unit can hear from more than one sender (DJ hears FOH + Stage Manager;
+// FOH hears all three; Event Manager hears DJ + Stage Manager). Rather than
+// the old single-slot model silently overwriting an unacknowledged message,
+// arrivals while something is already showing wait here in order.
+struct QueuedIncoming {
+  String category, text;
+  uint8_t senderRole;
+  bool isQuestion, escalated;
+};
+#define INCOMING_QUEUE_MAX 4
+
+// FOH-only: tracks a message FOH relayed to another client, so an A| ack
+// coming back can be routed to the original sender (not just to FOH), and
+// so an unacked Hospitality relay to Event Manager can escalate to FOH
+// after HOSPITALITY_ESCALATE_MS.
+struct RelayRecord {
+  bool active, escalated;
+  String text;
+  uint8_t originalSenderRole, relayedToRole;
+  unsigned long relayedAtMillis;
+};
+#define RELAY_TABLE_MAX 6
+#define HOSPITALITY_ESCALATE_MS 60000
+
+// Upper bound on labels pickButtonFontStep() sizes at once (a category's
+// items, or a submenu's subcategories) — headroom above prompts.h's
+// largest list (Hospitality/Quick Comms, 7 items) for future growth.
+#define MAX_GRID_LABELS 8
+
+// Category/submenu screens always lay out this many row slots, whatever
+// the actual list length — paging through the rest via categoryPageNavRect
+// (display_ui.ino) instead of shrinking every row to cram everything onto
+// one screen. Keeps button/font size identical across every category.
+#define CATEGORY_ITEMS_PER_PAGE 4
 
 enum NetMode { MODE_DIRECT = 0, MODE_VENUE = 1 };
 enum Screen  { SCR_HOME, SCR_CATEGORY, SCR_INCOMING, SCR_HISTORY, SCR_SETTINGS, SCR_DEVINFO, SCR_TRANSIENT };
@@ -120,6 +204,47 @@ enum Screen  { SCR_HOME, SCR_CATEGORY, SCR_INCOMING, SCR_HISTORY, SCR_SETTINGS, 
 // as a pixel glyph, never rendered as font text.
 #define THUMBS_WIRE_TEXT "[thumbs-up]"
 
+// Arduino's ctags-based auto-prototype pass inserts generated forward
+// declarations near the top of this file — before Rect/Screen/NetMode/
+// PromptCategory exist yet, and before the WebSockets library headers that
+// define WStype_t. Any function elsewhere using one of those types in its
+// signature gets a broken auto-prototype (this codebase has never
+// compiled before now — see HANDOFF.md). Writing the correct prototype
+// ourselves, here, after all of those types ARE visible, makes ctags skip
+// generating its own broken one for that function.
+bool pointInRect(int x, int y, Rect r);
+Rect gridRect(int index, int count, int areaX, int areaY, int areaW, int areaH, int cols);
+int btnRadius(Rect r);
+void shadedRoundRect(Rect r, uint16_t base);
+void flashPress(Rect r);
+void drawButton(Rect r, const String &label, uint16_t accent, bool bold, int forcedStep);
+void drawButton(Rect r, const String &label, uint16_t accent, bool bold);
+void drawButton(Rect r, const String &label, uint16_t accent);
+int pickButtonFontStep(const String labels[], int count, Rect sample);
+void drawSwipeHint(Rect r, uint16_t color);
+void showSwipeNudge(Rect r);
+bool swipeHit(Rect r, int dx, int dy, int cx2, int cy2);
+Rect carouselButtonRect();
+const PromptCategory* currentCatDef();
+bool onSubmenu();
+void categoryBottomRow(Rect &back, Rect &stage, bool draw);
+Rect categoryPageNavRect();
+void activateCategoryItem(int i, Rect r);
+void flashSent(Rect r, uint16_t accent);
+Rect questionAnswerRect(int i);
+void redrawScreen(Screen s);
+#if UNIT_ROLE == ROLE_DJ
+void sendStageUrgent(Rect stage);
+#endif
+void settingsOptionRow(Rect r, const String &label, bool selected);
+void settingsFlatButton(Rect r, const String &label);
+void actionSetMode(NetMode m);
+#if !IS_FOH
+void wsClientEvent(WStype_t type, uint8_t *payload, size_t length);
+#else
+void wsServerEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length);
+#endif
+
 // ---------------- 8. GLOBAL OBJECTS ----------------
 TFT_eSPI tft = TFT_eSPI();
 SPIClass touchSPI = SPIClass(VSPI);
@@ -127,13 +252,14 @@ XPT2046_Touchscreen touch(TOUCH_CS, TOUCH_IRQ);
 Preferences prefs;
 WiFiUDP discoveryUDP;
 
-#if IS_DJ_UNIT
+#if IS_FOH
+  WebSocketsServer ws = WebSocketsServer(WS_PORT);
+  uint8_t clientRole[WEBSOCKETS_SERVER_CLIENT_MAX];   // role identified on each client slot, or ROLE_UNKNOWN
+  bool clientConnected[WEBSOCKETS_SERVER_CLIENT_MAX];
+  RelayRecord relayTable[RELAY_TABLE_MAX];
+#else
   WebSocketsClient ws;
   bool wsClientStarted = false;
-#else
-  WebSocketsServer ws = WebSocketsServer(WS_PORT);
-  uint8_t peerClientNum = 0;
-  bool peerClientKnown = false;
 #endif
 
 // ---------------- 9. PALETTE (filled in by initPalette() at boot) ----------------
@@ -148,6 +274,10 @@ Screen currentScreen = SCR_HOME;
 
 int activeCategory = -1;
 int activeSubcategory = -1;   // -1 = showing the parent's submenu (or a leaf category)
+int homeCarouselIndex = 0;    // carouselHome themes only: which category the home screen shows
+int categoryPage = 0;         // which page of the submenu/item grid is showing (see categoryBottomRow's
+                               // neighbor categoryPageNavRect in display_ui.ino) — reset on every
+                               // navigation that changes which list is on screen
 Screen savedScreenBeforeIncoming = SCR_HOME;
 bool wsConnected = false;
 uint8_t backlightLevel = 55;     // 0-100, normal dark-room-friendly default
@@ -161,12 +291,24 @@ String incomingText = "";
 String lastSentText = "";
 bool incomingAcked = false;
 bool incomingIsQuestion = false;   // Q| overlay: answer buttons instead of Seen
+bool incomingEscalated = false;    // Hospitality relay that timed out on Event Manager and landed on FOH
+uint8_t incomingSenderRole = ROLE_UNKNOWN;
 unsigned long incomingAckedAtMillis = 0;
 unsigned long incomingShownAtMillis = 0;
+
+// Arrivals while the incoming overlay is already showing something else
+// queue here instead of clobbering it — see QueuedIncoming above.
+QueuedIncoming incomingQueue[INCOMING_QUEUE_MAX];
+uint8_t incomingQueueCount = 0;
+
+// The sender of the last message that arrived — read by DEST_REPLY_TO_SENDER
+// categories (Event Manager's Quick Comms) to know who to reply to.
+uint8_t lastIncomingSenderRole = ROLE_UNKNOWN;
 
 // Transient banner (T| wire type): brief auto-dismissing display, no Seen,
 // no ack — used by question answers and the thumbs-up.
 String transientText = "";
+uint8_t transientSenderRole = ROLE_UNKNOWN;
 unsigned long transientShownAt = 0;
 Screen savedScreenBeforeTransient = SCR_HOME;
 
@@ -174,12 +316,13 @@ bool wasTouched = false;
 unsigned long lastTouchAccept = 0;
 
 // Intentional-press gate: a touch must stay put this long before it counts
-// as a tap, so a graze can't fire a button. Release early = no tap.
-// Message-send buttons don't tap at all — they require a left-to-right
-// SWIPE across the button (trySwipeGesture in display_ui.ino), which is
-// impossible to trigger accidentally.
-#define TAP_HOLD_MS 200
-#define TAP_SLOP_PX 18
+// as a tap, so a graze can't fire a button. Release early = no tap. This is
+// the only accidental-press guard for message-send buttons unless a theme
+// opts into swipeToSend (trySwipeGesture in display_ui.ino) instead.
+// Loosened from 200ms/18px after real-hardware testing found the tighter
+// gate made ordinary taps on the resistive touchscreen feel unreliable.
+#define TAP_HOLD_MS 150
+#define TAP_SLOP_PX 26
 #define SWIPE_DIST  90    // horizontal travel to complete a swipe-send
 #define SWIPE_BAND  26    // max vertical wander during a swipe
 bool tapPending = false;

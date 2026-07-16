@@ -74,7 +74,7 @@ void drawSettings() {
 
   String ssid, ip;
   bool isStation = true;
-#if IS_DJ_UNIT
+#if !IS_FOH
   ssid = WiFi.SSID();
   ip = WiFi.localIP().toString();
 #else
@@ -197,7 +197,22 @@ void drawDeviceInfo() {
   String uptime = String(up / 3600) + "h " + String((up % 3600) / 60) + "m " + String(up % 60) + "s";
 
   int y = 54;
-  settingsInfoLine("Role",     IS_DJ_UNIT ? "DJ unit" : "FOH unit", y); y += 18;
+  settingsInfoLine("Role",     String(roleName(UNIT_ROLE)) + " unit", y); y += 18;
+#if IS_FOH
+  // Per-role breakdown: wsConnected alone can no longer say WHICH of the 3
+  // other units are up, now that more than one can be connected at once.
+  {
+    String linked = "";
+    const uint8_t peerRoles[3] = { ROLE_DJ, ROLE_STAGE_MGR, ROLE_EVENT_MGR };
+    for (int i = 0; i < 3; i++) {
+      if (clientNumForRole(peerRoles[i]) != NO_CLIENT) {
+        if (linked.length()) linked += ", ";
+        linked += roleAbbrev(peerRoles[i]);
+      }
+    }
+    settingsInfoLine("Linked", linked.length() ? linked : "none", y); y += 18;
+  }
+#endif
   settingsInfoLine("Firmware", FW_VERSION, y); y += 18;
   settingsInfoLine("Built",    String(__DATE__) + " " + String(__TIME__), y); y += 18;
   settingsInfoLine("Model",    String(ESP.getChipModel()) + " r" + String(ESP.getChipRevision()), y); y += 18;
