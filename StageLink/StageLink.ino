@@ -17,9 +17,9 @@
 #define IS_DJ_UNIT 1   // 1 = DJ booth unit, 0 = FOH unit. Set per board before flashing.
 
 // Visual theme, chosen per flash — styling only, zero effect on function.
-// 0=Midnight  1=Sepia  2=Game Boy  3=Amber  4=Ice  5=LCARS  6=Cyberpunk 2077
-// 7=Stardew   (full table in theme.h)
-#define STAGELINK_THEME 6
+// 0=Midnight  1=Sepia  2=Game Boy  3=Amber  4=Ice  5=LCARS
+// 6=Stardew   (full table in theme.h)
+#define STAGELINK_THEME 5
 
 // Firmware version, shown on Settings > Device Info. Date-based: bump to
 // the current date whenever a firmware change ships to the boards.

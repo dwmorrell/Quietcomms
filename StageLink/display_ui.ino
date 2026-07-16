@@ -45,6 +45,25 @@ void setBacklight(uint8_t percent) {
   ledcWrite(TFT_BL_PIN, duty);
 }
 
+// Quick one-tap brightness control (LCARS rail's brightness bubble) —
+// steps through a few fixed levels instead of the Settings screen's
+// +/-10% stepper. If backlightLevel isn't currently sitting on one of
+// these presets (e.g. left over from the Settings stepper), the first
+// tap just snaps forward to the next preset in the list.
+#define BRIGHTNESS_PRESET_COUNT 4
+const uint8_t BRIGHTNESS_PRESETS[BRIGHTNESS_PRESET_COUNT] = {100, 70, 40, 15};
+
+void cycleBrightnessPreset() {
+  int idx = -1;
+  for (int i = 0; i < BRIGHTNESS_PRESET_COUNT; i++) {
+    if (backlightLevel == BRIGHTNESS_PRESETS[i]) { idx = i; break; }
+  }
+  idx = (idx + 1) % BRIGHTNESS_PRESET_COUNT;
+  backlightLevel = BRIGHTNESS_PRESETS[idx];
+  setBacklight(backlightLevel);
+  prefs.putUChar("backlight", backlightLevel);
+}
+
 uint16_t colorForId(uint8_t id) {
   switch (id) {
     case 0: return COL_TEAL;
@@ -334,7 +353,22 @@ void drawButton(Rect r, const String &label, uint16_t accent, bool bold, int for
         int y = cy - (lh * n) / 2 + lh / 2;
         for (int i = 0; i < n; i++) { drawThemedString(lines[i], cx, y); y += lh; }
         drawn = true;
+      } else if (forcedStep >= 0) {
+        // group-uniform sizing: a sibling label forced this step, and this
+        // one doesn't perfectly satisfy the wrap check — still draw it
+        // here at the shared size (best-effort wrap) rather than falling
+        // through to the tiny font-2 safety net below, which would make
+        // this one button look broken relative to its siblings.
+        int y = cy - (lh * n) / 2 + lh / 2;
+        for (int i = 0; i < n; i++) { drawThemedString(lines[i], cx, y); y += lh; }
+        drawn = true;
       }
+    } else if (forcedStep >= 0) {
+      // doesn't even fit 2-line-wrapped at the shared size — still better
+      // to show it (possibly a hair tight) at the group's size than to
+      // collapse all the way down to font-2.
+      drawThemedString(label, cx, cy);
+      drawn = true;
     }
     if (forcedStep >= 0) break;   // group-uniform sizing: don't escalate past it
   }
@@ -566,6 +600,11 @@ void serviceStatusBar() {
   tft.fillRect(7, 7, 10, 10, connectionColor());
   drawStatusLabel();
   drawSignalBars();
+
+  if (THEME.lcarsChrome) {
+    if (currentScreen == SCR_HOME) refreshLcarsRailWifi(32, SCREEN_H - 10);
+    else if (currentScreen == SCR_CATEGORY) refreshLcarsRailWifi(categoryItemsAreaY(), SCREEN_H - 42);
+  }
 }
 
 void drawStatusBar() {
@@ -597,15 +636,118 @@ int contentX() { return THEME.lcarsChrome ? 40 : 10; }
 int contentW() { return SCREEN_W - contentX() - 10; }
 
 // LCARS sidebar: stacked color blocks with rounded ends down the left
-// edge, in the theme's three accent shades.
-void drawLcarsRail(int yTop, int yBottom) {
+// edge. Top (teal) is a battery silhouette, middle (amber) is a live
+// wifi-strength ladder, bottom (coral) is a tappable brightness-preset
+// cycler — same 3-block geometry as before, now each block does
+// something instead of being pure decoration. No text anywhere: icons
+// only, drawn in contrastTextFor() so they read against whichever
+// accent shade fills that block.
+void lcarsRailRects(int yTop, int yBottom, Rect &battery, Rect &wifi, Rect &brightness) {
   int x = 6, w = 28;
   int h = yBottom - yTop;
   int b1 = (int)(h * 0.42f), b2 = (int)(h * 0.30f);
   int b3 = h - b1 - b2 - 8;
-  tft.fillSmoothRoundRect(x, yTop, w, b1, 10, COL_TEAL, COL_BG);
-  tft.fillSmoothRoundRect(x, yTop + b1 + 4, w, b2, 10, COL_AMBER, COL_BG);
-  if (b3 > 12) tft.fillSmoothRoundRect(x, yTop + b1 + b2 + 8, w, b3, 10, COL_CORAL, COL_BG);
+  battery = {x, yTop, w, b1};
+  wifi = {x, yTop + b1 + 4, w, b2};
+  brightness = {x, yTop + b1 + b2 + 8, w, b3};
+}
+
+// Non-traditional gauge: the bubble itself splits into stacked rounded
+// segments, lit bottom-up count = level out of segCount — no icon
+// glyphs, just the pill reading as a level meter. level = -1 means "no
+// data": every segment stays hollow (dim fill + accent outline) instead
+// of implying a reading that doesn't exist.
+// One cohesive capsule (same shape the rail always used — rounded only
+// at the very top/bottom, flat sides), held by a solid COL_PANEL fill
+// even at level<=0, with thin flat divider lines marking segCount
+// segments instead of physically-separated blobs. The lit portion fills
+// from the bottom; getting its rounding right without per-corner-radius
+// support means drawing it a touch tall (so its own top rounding lands
+// above the visible boundary) and then repainting the flat-sided
+// overshoot back to COL_PANEL, leaving the capsule's untouched top cap
+// showing through unless the whole thing is lit.
+void drawGaugeSegments(Rect r, uint16_t accent, int level, int segCount) {
+  int radius = 10;
+  tft.fillSmoothRoundRect(r.x, r.y, r.w, r.h, radius, COL_PANEL, COL_BG);
+
+  if (level >= segCount) {
+    tft.fillSmoothRoundRect(r.x, r.y, r.w, r.h, radius, accent, COL_BG);
+  } else if (level > 0) {
+    int litH = (r.h * level) / segCount;
+    int y0 = r.y + r.h - litH - radius;
+    tft.fillSmoothRoundRect(r.x, y0, r.w, litH + radius, radius, accent, COL_PANEL);
+    int maskTop = r.y + radius;
+    int maskBottom = r.y + r.h - litH;
+    if (maskBottom > maskTop) tft.fillRect(r.x, maskTop, r.w, maskBottom - maskTop, COL_PANEL);
+  }
+
+  for (int i = 1; i < segCount; i++) {
+    int y = r.y + (r.h * i) / segCount;
+    tft.drawFastHLine(r.x + 3, y, r.w - 6, COL_BG);
+  }
+  tft.drawRoundRect(r.x, r.y, r.w, r.h, radius, accent);
+}
+
+#define RAIL_GAUGE_SEGMENTS 4
+
+// Bar count (0-4) from live RSSI, matching the status bar's own
+// thresholds; -1 (no data) draws every segment hollow.
+int wifiGaugeLevel() {
+  bool valid;
+  int rssi = currentRssi(valid);
+  if (!valid) return -1;
+  if (rssi >= -55) return 4;
+  if (rssi >= -65) return 3;
+  if (rssi >= -75) return 2;
+  return 1;
+}
+
+// Segment count (1-4) from the current backlight percentage — thresholds
+// rather than an exact preset match so it stays sensible even if
+// backlightLevel is sitting somewhere the presets don't hit exactly.
+int brightnessGaugeLevel() {
+  if (backlightLevel >= 85) return 4;
+  if (backlightLevel >= 55) return 3;
+  if (backlightLevel >= 25) return 2;
+  return 1;
+}
+
+void drawLcarsRail(int yTop, int yBottom) {
+  Rect battery, wifi, brightness;
+  lcarsRailRects(yTop, yBottom, battery, wifi, brightness);
+  // No battery-voltage sensing is wired on this hardware (see
+  // case/POWER.md) — level -1 draws it as an all-hollow gauge rather
+  // than a fake reading that could mislead someone mid-show.
+  drawGaugeSegments(battery, COL_TEAL, -1, RAIL_GAUGE_SEGMENTS);
+  drawGaugeSegments(wifi, COL_AMBER, wifiGaugeLevel(), RAIL_GAUGE_SEGMENTS);
+  if (brightness.h > 12) {
+    drawGaugeSegments(brightness, COL_CORAL, brightnessGaugeLevel(), RAIL_GAUGE_SEGMENTS);
+  }
+}
+
+// Redraws just the wifi bubble in place — called periodically so its
+// level tracks live RSSI without a full-screen redraw. yTop/yBottom
+// must match whatever drawLcarsRail was last called with for the
+// current screen.
+void refreshLcarsRailWifi(int yTop, int yBottom) {
+  Rect battery, wifi, brightness;
+  lcarsRailRects(yTop, yBottom, battery, wifi, brightness);
+  drawGaugeSegments(wifi, COL_AMBER, wifiGaugeLevel(), RAIL_GAUGE_SEGMENTS);
+}
+
+// Handles a tap anywhere in the rail; only the brightness block is
+// actionable. Returns true if it consumed the tap.
+bool tapLcarsRail(int x, int y, int yTop, int yBottom) {
+  if (!THEME.lcarsChrome) return false;
+  Rect battery, wifi, brightness;
+  lcarsRailRects(yTop, yBottom, battery, wifi, brightness);
+  if (brightness.h > 12 && pointInRect(x, y, brightness)) {
+    cycleBrightnessPreset();
+    if (currentScreen == SCR_HOME) drawHome();
+    else if (currentScreen == SCR_CATEGORY) drawCategory();
+    return true;
+  }
+  return false;
 }
 
 // ---------------- swipe-to-send ----------------
@@ -1519,6 +1661,12 @@ void onScreenTap(int x, int y) {
   if (y < 24 && currentScreen != SCR_INCOMING) {
     if (x > SCREEN_W - 28) { goSettings(); return; }
     if (x > SCREEN_W - 52) { goHistory(); return; }
+  }
+
+  if (THEME.lcarsChrome) {
+    if (currentScreen == SCR_HOME && tapLcarsRail(x, y, 32, SCREEN_H - 10)) return;
+    if (currentScreen == SCR_CATEGORY &&
+        tapLcarsRail(x, y, categoryItemsAreaY(), SCREEN_H - 42)) return;
   }
 
   switch (currentScreen) {
