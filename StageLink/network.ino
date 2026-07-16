@@ -31,6 +31,13 @@ void startNetworking() {
 #if IS_DJ_UNIT
   ws.onEvent(wsClientEvent);
   ws.setReconnectInterval(3000);
+  // A peer that vanishes via power loss or a network change never sends a
+  // clean close, so the TCP socket (and wsConnected) can look alive
+  // indefinitely with nothing coming back — previously that required a
+  // manual power cycle to notice. WS-level ping/pong catches that: two
+  // missed pongs forces a real WStype_DISCONNECTED, which then falls
+  // straight into the reconnect interval above.
+  ws.enableHeartbeat(10000, 3000, 2);
   if (netMode == MODE_DIRECT) {
     ws.begin(DIRECT_FOH_IP.toString().c_str(), WS_PORT, "/");
     wsClientStarted = true;
@@ -39,6 +46,9 @@ void startNetworking() {
 #else
   ws.begin();
   ws.onEvent(wsServerEvent);
+  // Same dead-peer detection on the server side, so FOH also notices a DJ
+  // unit that dropped off silently instead of holding a stale connection.
+  ws.enableHeartbeat(10000, 3000, 2);
 #endif
 
   if (netMode == MODE_VENUE) {
