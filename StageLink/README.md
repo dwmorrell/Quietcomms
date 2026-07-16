@@ -1,15 +1,18 @@
 # StageLink
 
-Button-only, no-typing comms between a DJ booth and front-of-house, on two
-ESP32 "Cheap Yellow Display" (CYD) boards.
+Button-only, no-typing comms between up to four roles at a live show — DJ
+booth, front-of-house (FOH), Stage Manager, and Event Manager — on ESP32
+"Cheap Yellow Display" (CYD) boards. FOH is always the hub; the DJ-only
+2-unit setup still works fine if that's all you're running.
 
 **Status:** written but not yet compiled or tested on real hardware — see
 `HANDOFF.md` if you're picking this up in Claude Code to finish that part.
 
 ## Hardware
-- 2x ESP32-2432S028R ("CYD"), 2.8" 320x240 resistive touch
-- 2x USB cable, plus real power (a phone charger or power bank — a weak
-  laptop USB port can brown out the WiFi radio mid-transmit)
+- 2-4x ESP32-2432S028R ("CYD"), 2.8" 320x240 resistive touch — FOH plus
+  however many of DJ / Stage Manager / Event Manager you're running
+- Matching USB cables, plus real power per board (a phone charger or power
+  bank — a weak laptop USB port can brown out the WiFi radio mid-transmit)
 
 ## 1. Arduino IDE setup
 - Boards Manager → install **esp32** by Espressif Systems
@@ -37,32 +40,39 @@ what's there:
 - Mac: `~/Documents/Arduino/libraries/TFT_eSPI/User_Setup.h`
 - Linux: `~/Arduino/libraries/TFT_eSPI/User_Setup.h`
 
-## 4. Flash both boards
+## 4. Flash each board
 1. Open `StageLink.ino` in Arduino IDE (open the whole folder, not just
    one file — the other tabs will load alongside it).
-2. Near the top: `#define IS_DJ_UNIT 1` → plug in the DJ booth board,
-   select its port, Upload.
-3. Change to `#define IS_DJ_UNIT 0` → plug in the FOH board, select its
-   port, Upload.
-4. That one line is the only difference between the two boards.
+2. Near the top: `#define UNIT_ROLE ROLE_FOH` → plug in the FOH board,
+   select its port, Upload. Flash FOH first — every other unit needs it
+   up to connect to.
+3. Change to `#define UNIT_ROLE ROLE_DJ` (or `ROLE_STAGE_MGR` /
+   `ROLE_EVENT_MGR`) → plug in that board, select its port, Upload.
+   Repeat for whichever of the three you're running.
+4. That one line is the only difference between what gets flashed to
+   each board.
 
 ## 5. First boot
-Both default to **Direct Link mode** — FOH creates its own private WiFi
-network and DJ joins it automatically, no venue wifi involved. Power on
-FOH first, then DJ; both should show "connected" within a few seconds.
+All units default to **Direct Link mode** — FOH creates its own private
+WiFi network and everyone else joins it automatically, no venue wifi
+involved. Power on FOH first, then the others; each should show
+"connected" within a few seconds.
 
-To use venue/house WiFi instead: tap the gear icon (top right) on either
+To use venue/house WiFi instead: tap the gear icon (top right) on any
 unit → **Use Venue WiFi**. It restarts and either reconnects automatically
 (if it's joined that network before) or opens a setup hotspot —
-**StageLink-DJ-Setup** or **StageLink-FOH-Setup**. Connect your phone to
-it, a setup page should pop up automatically (or browse to 192.168.4.1),
-and enter the venue's WiFi name and password. Do this on both boards.
+**StageLink-DJ-Setup**, **StageLink-FOH-Setup**, **StageLink-StageMgr-Setup**,
+or **StageLink-EventMgr-Setup** depending on the board's role. Connect your
+phone to it, a setup page should pop up automatically (or browse to
+192.168.4.1), and enter the venue's WiFi name and password. Do this on
+every board.
 
 ## 5b. Web dashboard (read-only)
 The FOH unit serves a live status page any phone or laptop browser can
-open — connection state of both units, signal strength, and the message
-log with seen/unseen marks. It's view-only: nothing on it can send
-messages or change settings.
+open — which of DJ / Stage Manager / Event Manager are currently linked,
+signal strength, and the message log (with sender/recipient and
+seen/unseen marks). It's view-only: nothing on it can send messages or
+change settings.
 
 - **Direct Link mode:** join the `StageLink-Link` wifi (password
   `boothtofoh`), browse to `http://192.168.4.1`
@@ -80,13 +90,16 @@ peer, green = linked. The two units don't need to match.
 
 ## 6. Customizing the prompts
 Open the `prompts.h` tab. Each category has a name, a color id
-(0-2 = theme accent shades, 3 = alert-red), and a list of short message
-labels — edit freely. A category can instead hold sub-categories (see
-the DJ "Sound" menu for the pattern): give it `subcats` + `subcatCount`
-instead of items, and each sub-category gets its own screen. Avoid the
-`|` character in labels. Re-upload whichever board's prompts you changed
-(DJ and FOH prompts are separate blocks in the same file, controlled by
-`IS_DJ_UNIT`).
+(0-2 = theme accent shades, 3 = alert-red), a list of short message
+labels, and a `destRole` saying where its messages go (a specific role,
+or `DEST_HOSPITALITY` / `DEST_REPLY_TO_SENDER` for the two dynamic
+routing rules — see the comment at the top of the file) — edit freely.
+A category can instead hold sub-categories (see the DJ "Sound" menu for
+the pattern): give it `subcats` + `subcatCount` instead of items, and
+each sub-category gets its own screen. Avoid the `|` character in
+labels. Re-upload whichever board's prompts you changed — each role's
+prompts are a separate block in the same file, controlled by
+`UNIT_ROLE`.
 
 ## Troubleshooting
 - **Screen stays blank after upload** — open `User_Setup.h` again and
@@ -98,9 +111,10 @@ instead of items, and each sub-category gets its own screen. Avoid the
   (check the Settings screen on each). In Venue WiFi mode, confirm the
   network is 2.4GHz — the ESP32 can't join 5GHz-only networks.
 - **Setup portal doesn't pop up automatically** — manually connect your
-  phone to the StageLink-DJ-Setup / StageLink-FOH-Setup hotspot, then
-  browse to 192.168.4.1.
-- **Connection keeps dropping mid-show** — switch both units to Direct
+  phone to that board's setup hotspot (StageLink-DJ-Setup /
+  StageLink-FOH-Setup / StageLink-StageMgr-Setup / StageLink-EventMgr-Setup),
+  then browse to 192.168.4.1.
+- **Connection keeps dropping mid-show** — switch every unit to Direct
   Link mode from Settings; it doesn't depend on venue infrastructure at
   all, which makes it the more reliable option for a live set.
 

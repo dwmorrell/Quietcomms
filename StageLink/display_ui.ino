@@ -499,7 +499,7 @@ void drawBootScreen() {
   tft.setFreeFont(NULL);
   tft.setTextFont(2);
   tft.setTextColor(COL_TEXT_DIM, COL_BG);
-  tft.drawString(IS_DJ_UNIT ? "DJ unit" : "FOH unit", SCREEN_W / 2, 180);
+  tft.drawString(String(roleName(UNIT_ROLE)) + " unit", SCREEN_W / 2, 180);
 }
 
 void drawStatusLine(const String &msg) {
@@ -511,11 +511,15 @@ void drawStatusLine(const String &msg) {
 }
 
 // Link strength of whatever this unit's radio is actually using: own STA
-// RSSI when joined to a network (DJ always; FOH on venue wifi), or the
-// connected DJ station's RSSI read from the AP's station list when FOH is
-// hosting Direct Link. valid=false when there's nothing to measure yet.
+// RSSI when joined to a network (non-FOH roles always; FOH on venue wifi),
+// or a single connected station's RSSI read from the AP's station list when
+// FOH is hosting Direct Link. valid=false when there's nothing to measure
+// yet — including when FOH has more than one station joined, since Direct
+// Link can now have up to 3 (DJ, Stage Manager, Event Manager) and a single
+// RSSI number stopped being meaningful once there's more than one to pick
+// from; see Device Info / the dashboard for a per-role connected breakdown.
 int currentRssi(bool &valid) {
-#if IS_DJ_UNIT
+#if !IS_FOH
   valid = (WiFi.status() == WL_CONNECTED);
   return valid ? WiFi.RSSI() : 0;
 #else
@@ -524,7 +528,7 @@ int currentRssi(bool &valid) {
     return valid ? WiFi.RSSI() : 0;
   }
   wifi_sta_list_t staList;
-  if (esp_wifi_ap_get_sta_list(&staList) == ESP_OK && staList.num > 0) {
+  if (esp_wifi_ap_get_sta_list(&staList) == ESP_OK && staList.num == 1) {
     valid = true;
     return staList.sta[0].rssi;
   }
@@ -542,7 +546,7 @@ int currentRssi(bool &valid) {
 uint16_t connectionColor() {
   if (wsConnected) return COL_GREEN;
   bool networkUp;
-#if IS_DJ_UNIT
+#if !IS_FOH
   networkUp = (WiFi.status() == WL_CONNECTED);
 #else
   networkUp = (netMode == MODE_VENUE) ? (WiFi.status() == WL_CONNECTED) : true;
@@ -574,14 +578,15 @@ void drawSignalBars() {
 
 // "DJ connected" / "FOH waiting..." label — extracted so the periodic
 // refresher can update it live along with the dot, not just on full
-// screen redraws. Clears its own region first since the two strings
-// differ in length.
+// screen redraws. Clears its own region first since the strings differ in
+// length. Shows this unit's OWN role, not a peer's — wsConnected just means
+// "at least one client" on FOH now, see Device Info for a per-role count.
 void drawStatusLabel() {
   tft.fillRect(24, 0, SCREEN_W - 100, 24, COL_BG);
   tft.setTextColor(COL_TEXT_DIM, COL_BG);
   tft.setTextDatum(TL_DATUM);
   tft.setTextFont(2);
-  String label = String(IS_DJ_UNIT ? "DJ" : "FOH") + (wsConnected ? " connected" : " waiting...");
+  String label = String(roleName(UNIT_ROLE)) + (wsConnected ? " connected" : " waiting...");
   tft.drawString(label, 24, 6);
 }
 
@@ -897,7 +902,7 @@ bool onSubmenu() {
 // "Come to stage" escape hatch) and returns the rects via out-params so
 // tapCategory uses identical geometry.
 void categoryBottomRow(Rect &back, Rect &stage, bool draw) {
-#if IS_DJ_UNIT
+#if UNIT_ROLE == ROLE_DJ
   // "Come to stage" is a much longer label than "Back" — give it most of
   // the row's width so it has a real shot at fitting on one line.
   int backW = 76;
@@ -1038,7 +1043,7 @@ void drawCategory() {
   drawCategoryPageNav(cat.itemCount);
 
   categoryBottomRow(back, stage, true);
-#if IS_DJ_UNIT
+#if UNIT_ROLE == ROLE_DJ
   if (THEME.swipeToSend) drawSwipeHint(stage, contrastTextFor(COL_ALERT));
 #endif
 
@@ -1051,11 +1056,11 @@ void drawCategory() {
   }
 }
 
-#if IS_DJ_UNIT
+#if UNIT_ROLE == ROLE_DJ
 // The DJ's standing "Come to stage" escape hatch — shared by the tap path
 // (swipeToSend off) and the swipe path (trySwipeGesture, swipeToSend on).
 void sendStageUrgent(Rect stage) {
-  sendPromptMessage("Urgent", "Come to stage");
+  sendPromptMessage("Urgent", "Come to stage", ROLE_FOH);
   pendingAckText = "Come to stage";
   pendingAckCategory = activeCategory;
   pendingAckSubcategory = activeSubcategory;
@@ -1070,7 +1075,7 @@ void tapCategory(int x, int y) {
   Rect back, stage;
   categoryBottomRow(back, stage, false);
 
-#if IS_DJ_UNIT
+#if UNIT_ROLE == ROLE_DJ
   if (pointInRect(x, y, stage)) {
     if (THEME.swipeToSend) showSwipeNudge(stage);
     else sendStageUrgent(stage);
@@ -1132,17 +1137,18 @@ void activateCategoryItem(int i, Rect r) {
   const PromptCategory &cat = *currentCatDef();
   if (i < 0 || i >= cat.itemCount) return;
   const PromptItem &item = cat.items[i];
+  uint8_t destRole = resolveDestRole(cat.destRole);
   if (item.kind == KIND_QUESTION) {
     // the answer arrives as a transient, so there's no Seen ack to wait for
-    sendQuestion(item.label);
+    sendQuestion(item.label, destRole);
     flashSent(r, colorForId(cat.colorId));
   } else if (item.kind == KIND_THUMBS) {
-    sendTransient(THUMBS_WIRE_TEXT);
+    sendTransient(THUMBS_WIRE_TEXT, destRole);
     flashSent(r, colorForId(cat.colorId));
   } else {
     // urgent items included: the swipe itself is the deliberate
     // confirmation that hold-to-confirm used to provide
-    sendPromptMessage(cat.name, item.label);
+    sendPromptMessage(cat.name, item.label, destRole);
     pendingAckText = item.label;
     pendingAckCategory = activeCategory;
     pendingAckSubcategory = activeSubcategory;
@@ -1186,7 +1192,7 @@ bool trySwipeGesture(int dx, int dy, int cx2, int cy2) {
       Rect r = gridRect(slot, CATEGORY_ITEMS_PER_PAGE, contentX(), areaY, contentW(), areaH, 1);
       if (swipeHit(r, dx, dy, cx2, cy2)) { activateCategoryItem(i, r); return true; }
     }
-#if IS_DJ_UNIT
+#if UNIT_ROLE == ROLE_DJ
     Rect back, stage;
     categoryBottomRow(back, stage, false);
     if (swipeHit(stage, dx, dy, cx2, cy2)) { sendStageUrgent(stage); return true; }
@@ -1270,14 +1276,16 @@ void drawIncoming() {
   tft.setTextColor(contrastTextFor(COL_ALERT), COL_ALERT);
   tft.setTextDatum(MC_DATUM);
   tft.setTextFont(2);
-  const char* header = incomingIsQuestion
-      ? (IS_DJ_UNIT ? "QUESTION FROM FOH" : "QUESTION FROM DJ")
-      : (IS_DJ_UNIT ? "MESSAGE FROM FOH" : "MESSAGE FROM DJ");
+  String header = String(incomingIsQuestion ? "QUESTION FROM " : "MESSAGE FROM ") + roleName(incomingSenderRole);
   tft.drawString(header, SCREEN_W / 2, 22);
 
-  tft.setTextColor(COL_TEXT_DIM, COL_BG);
+  // Escalated Hospitality relays (Event Manager didn't ack within 60s, so
+  // FOH is seeing this as a fallback) get a distinct category line so it
+  // reads as "this wasn't addressed to me directly," not a normal message.
+  String catLabel = incomingCategory + (incomingEscalated ? " (timed out)" : "");
+  tft.setTextColor(incomingEscalated ? COL_ALERT : COL_TEXT_DIM, COL_BG);
   tft.setTextFont(2);
-  tft.drawString(incomingCategory, SCREEN_W / 2, 76);
+  tft.drawString(catLabel, SCREEN_W / 2, 76);
 
   tft.setTextColor(COL_TEXT, COL_BG);
   setThemeButtonFont(0);   // theme's biggest button font for the message body
@@ -1311,7 +1319,7 @@ void tapIncoming(int x, int y) {
     for (int i = 0; i < 3; i++) {
       Rect r = questionAnswerRect(i);
       if (pointInRect(x, y, r)) {
-        sendTransient(QUESTION_ANSWERS[i]);
+        sendTransient(QUESTION_ANSWERS[i], incomingSenderRole);
         incomingIsQuestion = false;
         incomingAcked = true;
         dismissIncoming();
@@ -1342,9 +1350,54 @@ void redrawScreen(Screen s) {
 }
 
 void dismissIncoming() {
-  setBacklight(backlightLevel);
   incomingIsQuestion = false;
+  // Something else arrived while this was showing — advance to it instead
+  // of dropping back to the saved screen, so a second sender's message
+  // can't get silently lost behind the first.
+  if (incomingQueueCount > 0) {
+    QueuedIncoming q = incomingQueue[0];
+    for (int i = 1; i < incomingQueueCount; i++) incomingQueue[i - 1] = incomingQueue[i];
+    incomingQueueCount--;
+    incomingCategory = q.category;
+    incomingText = q.text;
+    incomingSenderRole = q.senderRole;
+    incomingIsQuestion = q.isQuestion;
+    incomingEscalated = q.escalated;
+    showIncomingOverlay();
+    return;
+  }
+  setBacklight(backlightLevel);
   redrawScreen(savedScreenBeforeIncoming);
+}
+
+// Every M|/Q| that lands at its final destination funnels through here —
+// called by handleIncomingWSText (network.ino) for a message that arrived
+// over this unit's own WS connection, and by FOH's serviceRelayEscalation
+// for a Hospitality relay that timed out on Event Manager. Displays
+// immediately if nothing else is showing, otherwise queues (see
+// QueuedIncoming, StageLink.ino).
+void enqueueIncomingMessage(const String &category, const String &text, uint8_t senderRole,
+                             bool isQuestion, bool escalated) {
+  lastIncomingSenderRole = senderRole;
+  addHistory(text, category, true, false, senderRole);
+  if (currentScreen != SCR_INCOMING) {
+    incomingCategory = category;
+    incomingText = text;
+    incomingSenderRole = senderRole;
+    incomingIsQuestion = isQuestion;
+    incomingEscalated = escalated;
+    showIncomingOverlay();
+  } else if (incomingQueueCount < INCOMING_QUEUE_MAX) {
+    QueuedIncoming &q = incomingQueue[incomingQueueCount++];
+    q.category = category;
+    q.text = text;
+    q.senderRole = senderRole;
+    q.isQuestion = isQuestion;
+    q.escalated = escalated;
+  }
+  // else: queue full — dropped, matches the project's existing no-persistent-
+  // queue philosophy under extreme load (send* functions no-op the same way
+  // when disconnected).
 }
 
 // ---------------- transient banner (T| wire type) ----------------
@@ -1403,7 +1456,7 @@ void showTransient(const String &text, const char *subtitleOverride = nullptr) {
   tft.setTextColor(COL_TEXT_DIM, COL_BG);
   tft.setTextDatum(MC_DATUM);
   tft.setTextFont(2);
-  tft.drawString(IS_DJ_UNIT ? "from FOH" : "from DJ", SCREEN_W / 2, 232);
+  tft.drawString(String("from ") + roleName(transientSenderRole), SCREEN_W / 2, 232);
 }
 
 void serviceTransient() {
@@ -1414,10 +1467,12 @@ void serviceTransient() {
 }
 
 void serviceIncomingAutoDismiss() {
-#if IS_DJ_UNIT
-  // FOH -> DJ prompts expire unseen after 25s: if the artist hasn't tapped
-  // Seen by then, the overlay clears itself and no ack is sent — FOH's
-  // green check never fires, which correctly reads as "not acknowledged."
+#if !IS_FOH
+  // Prompts expire unseen after 25s on every non-FOH role: if nobody's
+  // tapped Seen by then, the overlay clears itself and no ack is sent — the
+  // sender's green check never fires, which correctly reads as "not
+  // acknowledged." Applies equally to Stage Manager and Event Manager, not
+  // just DJ — a show can't stall on any one unit's screen.
   if (currentScreen == SCR_INCOMING && !incomingAcked &&
       millis() - incomingShownAtMillis > 25000) {
     dismissIncoming();
@@ -1450,7 +1505,11 @@ void serviceAlertPulse() {
 }
 
 // ---------------- history ----------------
-void addHistory(const String &text, const String &category, bool incoming, bool acked) {
+// role: for an incoming entry, the sender; for outgoing, whoever this unit
+// actually sent the WS frame to (FOH: the real recipient; everyone else:
+// always ROLE_FOH, since that's their only WS connection regardless of
+// where FOH ultimately relays it).
+void addHistory(const String &text, const String &category, bool incoming, bool acked, uint8_t role) {
   // shift everything down (index 0 = most recent)
   int last = HISTORY_MAX - 1;
   for (int i = last; i > 0; i--) history[i] = history[i - 1];
@@ -1459,6 +1518,7 @@ void addHistory(const String &text, const String &category, bool incoming, bool 
   history[0].incoming = incoming;
   history[0].acked = acked;
   history[0].atMillis = millis();
+  history[0].role = role;
   if (historyCount < HISTORY_MAX) historyCount++;
 }
 
@@ -1542,11 +1602,12 @@ void drawHistory() {
       shadedRoundRect(row, altShade(COL_PANEL, i));
 
       String dirLabel = h.incoming ? "IN " : "OUT";
+      String roleTag = String("[") + roleAbbrev(h.role) + "] ";
       String ackMark = (!h.incoming && h.acked) ? " (seen)" : "";
       tft.setTextColor(h.incoming ? COL_CORAL : COL_TEXT_DIM, COL_PANEL);
       tft.setTextDatum(TL_DATUM);
       tft.setTextFont(2);
-      tft.drawString(dirLabel + "  " + h.text + ackMark, row.x + 8, row.y + 5);
+      tft.drawString(dirLabel + roleTag + h.text + ackMark, row.x + 8, row.y + 5);
       tft.setTextColor(COL_TEXT_DIM, COL_PANEL);
       tft.drawString(relativeTime(h.atMillis), row.x + 8, row.y + 19);
 

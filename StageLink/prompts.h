@@ -12,9 +12,17 @@
   (What the shades look like depends on STAGELINK_THEME.)
 
   A category normally holds items. It can instead hold SUB-CATEGORIES —
-  give it {name, colorId, nullptr, 0, SUBCAT_ARRAY, count} and each
-  sub-category gets its own screen (see the DJ "Sound" menu below).
+  give it {name, colorId, nullptr, 0, SUBCAT_ARRAY, count, destRole} and
+  each sub-category gets its own screen (see the DJ "Sound" menu below).
   One level of nesting only.
+
+  destRole (last field) says where this category's messages go — a plain
+  role (ROLE_DJ / ROLE_FOH / ROLE_STAGE_MGR / ROLE_EVENT_MGR, StageLink.ino)
+  or one of two dynamic sentinels: DEST_HOSPITALITY (Event Manager if
+  connected, else FOH — with a 60s ack-timeout escalation back to FOH) and
+  DEST_REPLY_TO_SENDER (whichever unit sent the message currently being
+  replied to). On a submenu parent, destRole is unused (nullptr items) —
+  each child sub-category carries its own.
 
   Special item kinds (second field of PromptItem; omit for a normal
   message button):
@@ -39,11 +47,25 @@ struct PromptCategory {
   uint8_t itemCount;
   const PromptCategory* subcats;   // non-null = this entry opens a submenu
   uint8_t subcatCount;
+  uint8_t destRole;                // where this category's messages go — see header comment
 };
 
-#if IS_DJ_UNIT
-// ============== DJ -> FOH ==============
+// Shared across DJ and Stage Manager: both units' Hospitality category
+// routes the same way (DEST_HOSPITALITY) and reads naturally from either
+// unit's vantage point, so it's one list instead of two copies.
+const PromptItem HOSPITALITY_ITEMS[] = {
+  {"Clean up on isle 5!"},
+  {"It's too hot!"},
+  {"It's too cold!"},
+  {"Water please!"},
+  {"Redbull me"},
+  {"Adult Beverage Requested"},
+  {"More Towels!"},
+};
 
+// Shared across DJ (under "Sound") and Stage Manager (under "Tech"): both
+// route to FOH, and the same technical-issue wording reads naturally from
+// either vantage point, so these are single lists instead of duplicated.
 const PromptItem MONITOR_ITEMS[] = {
   {"More Volume"},
   {"More Bass"},
@@ -66,12 +88,6 @@ const PromptItem MIC_ITEMS[] = {
   {"Turn mic off"},
 };
 
-const PromptCategory SOUND_SUBCATS[] = {
-  {"Monitors",    0, MONITOR_ITEMS, 4},
-  {"House Sound", 1, HOUSE_ITEMS,   5},
-  {"Mic",         2, MIC_ITEMS,     4},
-};
-
 const PromptItem LIGHTS_ITEMS[] = {
   {"NO lights on me"},
   {"More lights on me"},
@@ -80,14 +96,13 @@ const PromptItem LIGHTS_ITEMS[] = {
   {"Aziz, more light!"},
 };
 
-const PromptItem HOSPITALITY_ITEMS[] = {
-  {"Clean up on isle 5!"},
-  {"It's too hot!"},
-  {"It's too cold!"},
-  {"Water please!"},
-  {"Redbull me"},
-  {"Adult Beverage Requested"},
-  {"More Towels!"},
+#if UNIT_ROLE == ROLE_DJ
+// ============== DJ -> FOH / Stage Manager / Event Manager ==============
+
+const PromptCategory SOUND_SUBCATS[] = {
+  {"Monitors",    0, MONITOR_ITEMS, 4, nullptr, 0, ROLE_FOH},
+  {"House Sound", 1, HOUSE_ITEMS,   5, nullptr, 0, ROLE_FOH},
+  {"Mic",         2, MIC_ITEMS,     4, nullptr, 0, ROLE_FOH},
 };
 
 const PromptItem SHOW_ITEMS[] = {
@@ -106,14 +121,14 @@ const PromptItem URGENT_ITEMS[] = {
 };
 
 const PromptCategory CATEGORIES[] = {
-  {"Sound",       0, nullptr,           0, SOUND_SUBCATS, 3},
-  {"Lights",      1, LIGHTS_ITEMS,      5},
-  {"Hospitality", 2, HOSPITALITY_ITEMS, 7},
-  {"Show",        0, SHOW_ITEMS,        5},
-  {"Urgent",      3, URGENT_ITEMS,      4},
+  {"Sound",       0, nullptr,           0, SOUND_SUBCATS, 3, ROLE_FOH},
+  {"Lights",      1, LIGHTS_ITEMS,      5, nullptr, 0, ROLE_FOH},
+  {"Hospitality", 2, HOSPITALITY_ITEMS, 7, nullptr, 0, DEST_HOSPITALITY},
+  {"Show",        0, SHOW_ITEMS,        5, nullptr, 0, ROLE_FOH},
+  {"Urgent",      3, URGENT_ITEMS,      4, nullptr, 0, ROLE_FOH},
 };
 
-#else
+#elif UNIT_ROLE == ROLE_FOH
 // ============== FOH -> DJ ==============
 
 const PromptItem QUICK_ITEMS[] = {
@@ -141,9 +156,51 @@ const PromptItem FOH_SHOW_ITEMS[] = {
 };
 
 const PromptCategory CATEGORIES[] = {
-  {"Quick Comms", 0, QUICK_ITEMS,    7},
-  {"Heads Up",    1, HEADSUP_ITEMS,  3},
-  {"Show",        0, FOH_SHOW_ITEMS, 5},
+  {"Quick Comms", 0, QUICK_ITEMS,    7, nullptr, 0, ROLE_DJ},
+  {"Heads Up",    1, HEADSUP_ITEMS,  3, nullptr, 0, ROLE_DJ},
+  {"Show",        0, FOH_SHOW_ITEMS, 5, nullptr, 0, ROLE_DJ},
+};
+
+#elif UNIT_ROLE == ROLE_STAGE_MGR
+// ============== Stage Manager -> DJ / FOH / Event Manager ==============
+// Draft content — edit freely, same as every other role's list.
+
+const PromptItem BOH_ITEMS[] = {
+  {"5 min to stage"},
+  {"Ready when you are"},
+  {"Hold, not ready yet"},
+  {"Talent is moving"},
+};
+
+const PromptCategory TECH_SUBCATS[] = {
+  {"Lighting",    1, LIGHTS_ITEMS,  5, nullptr, 0, ROLE_FOH},
+  {"House Sound", 0, HOUSE_ITEMS,   5, nullptr, 0, ROLE_FOH},
+  {"Monitors",    2, MONITOR_ITEMS, 4, nullptr, 0, ROLE_FOH},
+  {"Mic",         1, MIC_ITEMS,     4, nullptr, 0, ROLE_FOH},
+};
+
+const PromptCategory CATEGORIES[] = {
+  {"Back of House", 0, BOH_ITEMS,         4, nullptr, 0, ROLE_DJ},
+  {"Hospitality",   2, HOSPITALITY_ITEMS, 7, nullptr, 0, DEST_HOSPITALITY},
+  {"Tech",          1, nullptr, 0, TECH_SUBCATS, 4, ROLE_FOH},
+};
+
+#elif UNIT_ROLE == ROLE_EVENT_MGR
+// ============== Event Manager -> whoever it's replying to ==============
+// Draft content — edit freely, same as every other role's list. Replies
+// route back to whichever unit (DJ or Stage Manager) sent the hospitality
+// request currently being answered — see DEST_REPLY_TO_SENDER.
+
+const PromptItem EM_QUICK_ITEMS[] = {
+  {"Got it"},
+  {"On it"},
+  {"Handled"},
+  {"Give me a min"},
+  {"[thumbs-up]", KIND_THUMBS},
+};
+
+const PromptCategory CATEGORIES[] = {
+  {"Quick Comms", 0, EM_QUICK_ITEMS, 5, nullptr, 0, DEST_REPLY_TO_SENDER},
 };
 
 #endif
