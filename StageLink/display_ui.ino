@@ -554,26 +554,28 @@ uint16_t connectionColor() {
   return networkUp ? COL_YELLOW : COL_ALERT;
 }
 
-// Blocky 4-bar signal indicator in the status bar. 4 states by RSSI
-// (>=-55 / >=-65 / >=-75 / weaker = 4/3/2/1 bars); all bars sit dim
-// until there's a live link to measure.
-void drawSignalBars() {
+// Live WiFi signal as a fine 0-100 percentage (-1 = no link to measure),
+// mapping the useful RSSI window -90..-50 dBm across the full range so the
+// meters move smoothly instead of jumping between a few buckets.
+int wifiSignalPercent() {
   bool valid;
   int rssi = currentRssi(valid);
-  int bars = 0;
-  if (valid) {
-    if (rssi >= -55) bars = 4;
-    else if (rssi >= -65) bars = 3;
-    else if (rssi >= -75) bars = 2;
-    else bars = 1;
+  if (!valid) return -1;
+  return map(constrain(rssi, -90, -50), -90, -50, 0, 100);
+}
+
+// Status-bar signal indicator: a small horizontal "thermometer" that
+// fills left-to-right with signal strength — a continuous meter, no
+// discrete bars. Sits hollow (panel fill + border) when there's no link.
+void drawSignalBars() {
+  int pct = wifiSignalPercent();
+  int bx = SCREEN_W - 72, by = 6, bw = 18, bh = 10;
+  tft.fillRect(bx, by, bw, bh, COL_PANEL);
+  if (pct > 0) {
+    int litW = (bw * min(pct, 100)) / 100;
+    tft.fillRect(bx, by, litW, bh, COL_TEXT);
   }
-  const int heights[4] = {4, 7, 10, 13};
-  int bx = SCREEN_W - 72;
-  for (int i = 0; i < 4; i++) {
-    int x = bx + i * 4;
-    tft.fillRect(x, 4, 3, 16, COL_BG);
-    tft.fillRect(x, 20 - heights[i], 3, heights[i], (i < bars) ? COL_TEXT : COL_PANEL);
-  }
+  tft.drawRect(bx, by, bw, bh, COL_BORDER);
 }
 
 // "DJ connected" / "FOH waiting..." label — extracted so the periodic
@@ -657,28 +659,23 @@ void lcarsRailRects(int yTop, int yBottom, Rect &battery, Rect &wifi, Rect &brig
   brightness = {x, yTop + b1 + b2 + 8, w, b3};
 }
 
-// Non-traditional gauge: the bubble itself splits into stacked rounded
-// segments, lit bottom-up count = level out of segCount — no icon
-// glyphs, just the pill reading as a level meter. level = -1 means "no
-// data": every segment stays hollow (dim fill + accent outline) instead
-// of implying a reading that doesn't exist.
-// One cohesive capsule (same shape the rail always used — rounded only
-// at the very top/bottom, flat sides), held by a solid COL_PANEL fill
-// even at level<=0, with thin flat divider lines marking segCount
-// segments instead of physically-separated blobs. The lit portion fills
-// from the bottom; getting its rounding right without per-corner-radius
-// support means drawing it a touch tall (so its own top rounding lands
-// above the visible boundary) and then repainting the flat-sided
-// overshoot back to COL_PANEL, leaving the capsule's untouched top cap
-// showing through unless the whole thing is lit.
-void drawGaugeSegments(Rect r, uint16_t accent, int level, int segCount) {
+// Continuous "thermometer" fill meter: one cohesive capsule (rounded top
+// and bottom, flat sides) on a solid COL_PANEL base, with the accent
+// filling smoothly from the bottom to pct% — no divider lines, so the
+// level reads at fine resolution. pct = -1 means "no data": the capsule
+// stays all-hollow (panel fill + accent outline) rather than implying a
+// reading that doesn't exist. Getting the lit region's top rounding right
+// without per-corner radii means drawing it a touch tall so its own top
+// cap lands above the fill boundary, then repainting the flat-sided
+// overshoot back to COL_PANEL.
+void drawFillMeter(Rect r, uint16_t accent, int pct) {
   int radius = 10;
   tft.fillSmoothRoundRect(r.x, r.y, r.w, r.h, radius, COL_PANEL, COL_BG);
 
-  if (level >= segCount) {
+  if (pct >= 100) {
     tft.fillSmoothRoundRect(r.x, r.y, r.w, r.h, radius, accent, COL_BG);
-  } else if (level > 0) {
-    int litH = (r.h * level) / segCount;
+  } else if (pct > 0) {
+    int litH = (r.h * pct) / 100;
     int y0 = r.y + r.h - litH - radius;
     tft.fillSmoothRoundRect(r.x, y0, r.w, litH + radius, radius, accent, COL_PANEL);
     int maskTop = r.y + radius;
@@ -686,47 +683,19 @@ void drawGaugeSegments(Rect r, uint16_t accent, int level, int segCount) {
     if (maskBottom > maskTop) tft.fillRect(r.x, maskTop, r.w, maskBottom - maskTop, COL_PANEL);
   }
 
-  for (int i = 1; i < segCount; i++) {
-    int y = r.y + (r.h * i) / segCount;
-    tft.drawFastHLine(r.x + 3, y, r.w - 6, COL_BG);
-  }
   tft.drawRoundRect(r.x, r.y, r.w, r.h, radius, accent);
-}
-
-#define RAIL_GAUGE_SEGMENTS 4
-
-// Bar count (0-4) from live RSSI, matching the status bar's own
-// thresholds; -1 (no data) draws every segment hollow.
-int wifiGaugeLevel() {
-  bool valid;
-  int rssi = currentRssi(valid);
-  if (!valid) return -1;
-  if (rssi >= -55) return 4;
-  if (rssi >= -65) return 3;
-  if (rssi >= -75) return 2;
-  return 1;
-}
-
-// Segment count (1-4) from the current backlight percentage — thresholds
-// rather than an exact preset match so it stays sensible even if
-// backlightLevel is sitting somewhere the presets don't hit exactly.
-int brightnessGaugeLevel() {
-  if (backlightLevel >= 85) return 4;
-  if (backlightLevel >= 55) return 3;
-  if (backlightLevel >= 25) return 2;
-  return 1;
 }
 
 void drawLcarsRail(int yTop, int yBottom) {
   Rect battery, wifi, brightness;
   lcarsRailRects(yTop, yBottom, battery, wifi, brightness);
-  // No battery-voltage sensing is wired on this hardware (see
-  // case/POWER.md) — level -1 draws it as an all-hollow gauge rather
-  // than a fake reading that could mislead someone mid-show.
-  drawGaugeSegments(battery, COL_TEAL, -1, RAIL_GAUGE_SEGMENTS);
-  drawGaugeSegments(wifi, COL_AMBER, wifiGaugeLevel(), RAIL_GAUGE_SEGMENTS);
+  // batteryPercent() returns -1 on boards with no battery-sense pin
+  // (BATTERY_ADC_PIN -1), which draws the gauge all-hollow — the honest
+  // "no reading" state on the existing hardware.
+  drawFillMeter(battery, COL_TEAL, batteryPercent());
+  drawFillMeter(wifi, COL_AMBER, wifiSignalPercent());
   if (brightness.h > 12) {
-    drawGaugeSegments(brightness, COL_CORAL, brightnessGaugeLevel(), RAIL_GAUGE_SEGMENTS);
+    drawFillMeter(brightness, COL_CORAL, backlightLevel);
   }
 }
 
@@ -737,7 +706,7 @@ void drawLcarsRail(int yTop, int yBottom) {
 void refreshLcarsRailWifi(int yTop, int yBottom) {
   Rect battery, wifi, brightness;
   lcarsRailRects(yTop, yBottom, battery, wifi, brightness);
-  drawGaugeSegments(wifi, COL_AMBER, wifiGaugeLevel(), RAIL_GAUGE_SEGMENTS);
+  drawFillMeter(wifi, COL_AMBER, wifiSignalPercent());
 }
 
 // Handles a tap anywhere in the rail; only the brightness block is
@@ -783,17 +752,36 @@ bool swipeHit(Rect r, int dx, int dy, int cx2, int cy2) {
 }
 
 // ---------------- home screen ----------------
+// Caps each home-screen category button's height so a role with very few
+// categories (Event Manager's single "Quick Comms", or any short list)
+// doesn't stretch its row into one screen-filling button. On LCARS chrome
+// especially, the rounded cap's radius is r.h/2 — an uncapped row height
+// blows that deduction up (see drawButton's maxWidth calc) and crushes
+// the label to almost nothing. Leftover space is centered rather than
+// left stuck at the top.
+void homeGridArea(int &areaY, int &areaH) {
+  const int maxRowH = 90;
+  int natural = SCREEN_H - 42;
+  int rows = CATEGORY_COUNT;   // cols=1 for the home grid
+  int gap = 8;
+  int capped = maxRowH * rows + gap * (rows - 1);
+  areaH = min(natural, capped);
+  areaY = 32 + (natural - areaH) / 2;
+}
+
 void drawHome() {
   tft.fillScreen(COL_BG);
   drawStatusBar();
   if (THEME.lcarsChrome) drawLcarsRail(32, SCREEN_H - 10);
   if (THEME.carouselHome) { drawHomeCarousel(); return; }
+  int areaY, areaH;
+  homeGridArea(areaY, areaH);
   String labels[CATEGORY_COUNT];
   for (int i = 0; i < CATEGORY_COUNT; i++) labels[i] = CATEGORIES[i].name;
-  Rect sample = gridRect(0, CATEGORY_COUNT, contentX(), 32, contentW(), SCREEN_H - 42, 1);
+  Rect sample = gridRect(0, CATEGORY_COUNT, contentX(), areaY, contentW(), areaH, 1);
   int step = pickButtonFontStep(labels, CATEGORY_COUNT, sample);
   for (int i = 0; i < CATEGORY_COUNT; i++) {
-    Rect r = gridRect(i, CATEGORY_COUNT, contentX(), 32, contentW(), SCREEN_H - 42, 1);
+    Rect r = gridRect(i, CATEGORY_COUNT, contentX(), areaY, contentW(), areaH, 1);
     drawButton(r, CATEGORIES[i].name, altShade(colorForId(CATEGORIES[i].colorId), i), true, step);
   }
 }
@@ -865,8 +853,10 @@ void tapHome(int x, int y) {
     }
     return;
   }
+  int areaY, areaH;
+  homeGridArea(areaY, areaH);
   for (int i = 0; i < CATEGORY_COUNT; i++) {
-    Rect r = gridRect(i, CATEGORY_COUNT, contentX(), 32, contentW(), SCREEN_H - 42, 1);
+    Rect r = gridRect(i, CATEGORY_COUNT, contentX(), areaY, contentW(), areaH, 1);
     if (pointInRect(x, y, r)) {
       flashPress(r);
       activeCategory = i;

@@ -26,7 +26,7 @@
 #define ROLE_UNKNOWN    255   // WS server client slot not yet identified
 #define NO_CLIENT       255   // clientNumForRole() found no connected client for that role
 
-#define UNIT_ROLE ROLE_FOH   // set per board before flashing: ROLE_DJ / ROLE_FOH / ROLE_STAGE_MGR / ROLE_EVENT_MGR
+#define UNIT_ROLE ROLE_EVENT_MGR   // set per board before flashing: ROLE_DJ / ROLE_FOH / ROLE_STAGE_MGR / ROLE_EVENT_MGR
 #define IS_FOH (UNIT_ROLE == ROLE_FOH)   // only FOH ever runs the WebSocket server (hub) — every other role is a client of it
 
 // Wire-protocol destRole sentinels (see PromptCategory.destRole in
@@ -118,6 +118,17 @@ const char* roleAbbrev(uint8_t role) {
 #define LED_G 16
 #define LED_B 17
 
+// Battery voltage sense (ADC). -1 = no battery sensing on this board (the
+// classic ESP32-2432S028R has none), which makes batteryPercent() return
+// -1 and the on-screen gauge draw all-hollow. On the newer boards with an
+// on-board LiPo interface, set this to the battery-sense pin and adjust
+// BATTERY_DIVIDER to the board's resistor ratio (commonly 2.0 for a
+// half-divider). See case/POWER.md.
+#define BATTERY_ADC_PIN   -1
+#define BATTERY_DIVIDER   2.0f
+#define BATTERY_MIN_MV    3300   // LiPo empty (~0%)
+#define BATTERY_MAX_MV    4200   // LiPo full  (~100%)
+
 // ---------------- 5. TOUCH CALIBRATION ----------------
 // If taps land in the wrong place: try TOUCH_SWAP_XY first, then the
 // invert flags. Only touch the raw min/max numbers if presses feel
@@ -186,6 +197,24 @@ struct RelayRecord {
 #define RELAY_TABLE_MAX 6
 #define HOSPITALITY_ESCALATE_MS 60000
 
+// FOH-only: latest health telemetry heard from each peer role, indexed by
+// role code (0..3). Fed by S| frames (see serviceTelemetry / routeFromClient).
+// Sentinel -1000 = "no value / not yet heard"; individual fields stay at
+// their sentinel when a unit doesn't have that sensor (older boards send
+// only battery=-1 and rssi). The Phase 3 dashboard reads this table.
+#define TELEM_NONE (-1000)
+struct UnitTelemetry {
+  bool everHeard;
+  unsigned long atMillis;   // when this row last updated (staleness)
+  int batteryPct;           // 0-100, or -1 if the unit has no battery sense
+  int battMv;
+  int tempC10;              // temperature x10 (so one int carries a decimal)
+  int humidity;             // %RH
+  int splDbA;               // dB(A)
+  int rssi;                 // dBm
+};
+#define TELEMETRY_BROADCAST_MS 8000
+
 // Upper bound on labels pickButtonFontStep() sizes at once (a category's
 // items, or a submenu's subcategories) — headroom above prompts.h's
 // largest list (Hospitality/Quick Comms, 7 items) for future growth.
@@ -225,7 +254,7 @@ void drawSwipeHint(Rect r, uint16_t color);
 void showSwipeNudge(Rect r);
 bool swipeHit(Rect r, int dx, int dy, int cx2, int cy2);
 void lcarsRailRects(int yTop, int yBottom, Rect &battery, Rect &wifi, Rect &brightness);
-void drawGaugeSegments(Rect r, uint16_t accent, int level, int segCount);
+void drawFillMeter(Rect r, uint16_t accent, int pct);
 Rect carouselButtonRect();
 const PromptCategory* currentCatDef();
 bool onSubmenu();
@@ -259,6 +288,7 @@ WiFiUDP discoveryUDP;
   uint8_t clientRole[WEBSOCKETS_SERVER_CLIENT_MAX];   // role identified on each client slot, or ROLE_UNKNOWN
   bool clientConnected[WEBSOCKETS_SERVER_CLIENT_MAX];
   RelayRecord relayTable[RELAY_TABLE_MAX];
+  UnitTelemetry telemetry[4];   // latest health per peer role (0..3); see UnitTelemetry
 #else
   WebSocketsClient ws;
   bool wsClientStarted = false;
@@ -408,4 +438,6 @@ void loop() {
   serviceStatusBar();
   serviceAckCheck();
   serviceDashboard();
+  serviceSensors();
+  serviceTelemetry();
 }

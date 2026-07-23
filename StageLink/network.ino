@@ -273,6 +273,7 @@ void routeFromClient(uint8_t num, const String &msg) {
   if (srcRole == ROLE_UNKNOWN) return;   // not yet identified — drop
 
   if (msg.startsWith("A|")) { handleAckFromClient(num, msg.substring(2)); return; }
+  if (msg.startsWith("S|")) { storeTelemetry(srcRole, msg); return; }   // health, not a message
   if (!(msg.startsWith("M|") || msg.startsWith("Q|") || msg.startsWith("T|"))) return;
 
   char type = msg[0];
@@ -478,4 +479,54 @@ void sendTransient(const String &text, uint8_t destRole) {
   addHistory(text, "", false, true, ROLE_FOH);
 #endif
   lastSentText = text;
+}
+
+// ---------------- telemetry (S|) ----------------
+// Optional, additive health reporting: S|<role>|<batt%>|<battMv>|<tempC10>
+// |<humidity>|<splDbA>|<rssi>, each field an integer or "-" when the unit
+// lacks that sensor. It carries no user-facing message, so a client or old
+// firmware that doesn't understand S| simply ignores it (unknown prefix).
+#if IS_FOH
+static int telParse(const String &s) { return s == "-" ? TELEM_NONE : s.toInt(); }
+
+// Store a peer's latest S| frame into telemetry[role]. Indexed by the
+// authenticated clientRole[num] (not the self-declared field), so one
+// client can't spoof another unit's row.
+void storeTelemetry(uint8_t role, const String &msg) {
+  if (role > 3) return;
+  String f[8];
+  int start = 0, fi = 0;
+  for (int i = 0; i <= (int)msg.length() && fi < 8; i++) {
+    if (i == (int)msg.length() || msg[i] == '|') { f[fi++] = msg.substring(start, i); start = i + 1; }
+  }
+  if (fi < 8) return;   // malformed — ignore
+  UnitTelemetry &t = telemetry[role];
+  t.everHeard = true;
+  t.atMillis = millis();
+  t.batteryPct = telParse(f[2]);
+  t.battMv     = telParse(f[3]);
+  t.tempC10    = telParse(f[4]);
+  t.humidity   = telParse(f[5]);
+  t.splDbA     = telParse(f[6]);
+  t.rssi       = telParse(f[7]);
+}
+#endif
+
+// Non-FOH units broadcast their own health to FOH every ~8s. A sensor-less
+// board still sends a valid frame (battery "-", live rssi); the Phase 2
+// sensors fill the middle fields in.
+void serviceTelemetry() {
+#if !IS_FOH
+  static unsigned long last = 0;
+  if (!wsConnected) return;
+  if (millis() - last < TELEMETRY_BROADCAST_MS) return;
+  last = millis();
+  int bp = batteryPercent(), bmv = batteryMilliVolts();
+  String out = "S|" + String(UNIT_ROLE) + "|";
+  out += (bp >= 0 ? String(bp) : "-");   out += "|";
+  out += (bmv >= 0 ? String(bmv) : "-"); out += "|";
+  out += "-|-|-|";   // tempC10 | humidity | splDbA — Phase 2 sensors
+  out += (WiFi.status() == WL_CONNECTED ? String(WiFi.RSSI()) : "-");
+  ws.sendTXT(out.c_str());
+#endif
 }
