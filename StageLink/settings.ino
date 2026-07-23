@@ -198,6 +198,20 @@ void drawDeviceInfo() {
 
   int y = 54;
   settingsInfoLine("Role",     String(roleName(UNIT_ROLE)) + " unit", y); y += 18;
+
+  // On-board sensors — rows appear only on boards that actually have them
+  // (every reader returns TELEM_NONE / battery -1 on the classic CYD, so
+  // this adds nothing there).
+  {
+    String env = "";
+    int t = tempC10();      if (t   != TELEM_NONE) env += String(t / 10.0, 1) + "C ";
+    int h = humidityPct();  if (h   != TELEM_NONE) env += String(h) + "% ";
+    int s = splDbA();       if (s   != TELEM_NONE) env += String(s) + "dB";
+    if (env.length()) { settingsInfoLine("Sensors", env, y); y += 18; }
+    int bp = batteryPercent();
+    if (bp >= 0) { settingsInfoLine("Battery", String(bp) + "% (" + String(batteryMilliVolts()) + "mV)", y); y += 18; }
+  }
+
 #if IS_FOH
   // Per-role breakdown: wsConnected alone can no longer say WHICH of the 3
   // other units are up, now that more than one can be connected at once.

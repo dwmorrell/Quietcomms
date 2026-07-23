@@ -129,6 +129,29 @@ const char* roleAbbrev(uint8_t role) {
 #define BATTERY_MIN_MV    3300   // LiPo empty (~0%)
 #define BATTERY_MAX_MV    4200   // LiPo full  (~100%)
 
+// ---- Phase 2 sensors (per-board; all OFF on the classic CYD) ----------
+// Everything below is a no-op until enabled: readers return TELEM_NONE and
+// the drivers compile out, so the existing boards behave exactly as before.
+// On the new ESP32-32E board, set the pins from its real pinout and flip the
+// HAS_* flags to 1. Pin numbers here are PLACEHOLDERS chosen only to be
+// distinct — replace with verified free GPIOs (mind the pin budget: I2C
+// needs 2, the I2S mic needs 3, and I2S BCLK/WS must be output-capable).
+
+// Temp/humidity — AHT20 on a shared I2C bus (hand-rolled driver, no library).
+#define HAS_TEMP_HUMIDITY 0
+#define I2C_SDA    27          // PLACEHOLDER
+#define I2C_SCL    22          // PLACEHOLDER
+#define AHT20_ADDR 0x38
+
+// SPL — I2S MEMS mic (e.g. INMP441): ESP32 drives BCLK+WS, receives DIN.
+// Best-effort dB(A): RMS -> dBFS -> A-weighting -> + per-unit calibration
+// offset (stored in Preferences, set from Settings against a reference).
+#define HAS_SPL_MIC 0
+#define I2S_BCLK   14          // PLACEHOLDER (output-capable)
+#define I2S_WS     15          // PLACEHOLDER (output-capable)
+#define I2S_DIN    35          // PLACEHOLDER (input-only OK for DIN)
+#define SPL_SAMPLE_RATE 48000  // A-weighting coefficients below assume 48 kHz
+
 // ---------------- 5. TOUCH CALIBRATION ----------------
 // If taps land in the wrong place: try TOUCH_SWAP_XY first, then the
 // invert flags. Only touch the raw min/max numbers if presses feel

@@ -522,10 +522,13 @@ void serviceTelemetry() {
   if (millis() - last < TELEMETRY_BROADCAST_MS) return;
   last = millis();
   int bp = batteryPercent(), bmv = batteryMilliVolts();
+  int t = tempC10(), h = humidityPct(), spl = splDbA();
   String out = "S|" + String(UNIT_ROLE) + "|";
-  out += (bp >= 0 ? String(bp) : "-");   out += "|";
+  out += (bp  >= 0 ? String(bp)  : "-"); out += "|";
   out += (bmv >= 0 ? String(bmv) : "-"); out += "|";
-  out += "-|-|-|";   // tempC10 | humidity | splDbA — Phase 2 sensors
+  out += (t   != TELEM_NONE ? String(t)   : "-"); out += "|";
+  out += (h   != TELEM_NONE ? String(h)   : "-"); out += "|";
+  out += (spl != TELEM_NONE ? String(spl) : "-"); out += "|";
   out += (WiFi.status() == WL_CONNECTED ? String(WiFi.RSSI()) : "-");
   ws.sendTXT(out.c_str());
 #endif
